@@ -1,0 +1,64 @@
+MAX PACK SIZE = 1300 (type and data included)
+
+every number shall be transfered in little endiannes
+
+packet:
+	6 byte: id (server respond to query with same id)
+	2 byte: type 
+	... (data)
+
+"->": what the client send
+"<-": what the server send
+
+get package id:
+	-> 0x01
+	-> package name (\0 terminated)
+
+	<- 0x02
+	<- package id (8 bytes, == 0 if notfound)
+
+get package info:
+	-> 0x03
+	-> package id (8 bytes)
+
+	success:
+		<- 0x04
+		<- package size (8 bytes)
+		<- package info (1000 character description)
+	fail:
+		package is being updated:
+			<- 0xFF00
+		invalid package id:
+			<- 0xFF01
+
+read package part:
+	-> 0x07
+	-> package id (8 bytes)
+	-> offset (8 bytes)
+	-> length (2 bytes)
+
+	success:
+		<- 0x08
+		<- data (at most `length' bytes)
+	
+	fail:
+		offset out of range:
+			<- 0xFF03
+		length too long:
+			<- 0xFF04
+		no package open:
+			<- 0xFF05
+
+get package dependencies:
+	-> 0x09
+	-> package id (8 bytes)
+
+	success:
+		<- 0x0A
+		<- dependencies ids (8 bytes each)
+	fail:
+		package is being updated:
+			<- 0xFF00
+		invalid package id:
+			<- 0xFF01
+		
