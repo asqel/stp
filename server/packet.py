@@ -29,6 +29,7 @@ ERR_UPDATING = 0xFF00;
 ERR_INV_ID = 0xFF01;
 ERR_OUT_RANGE = 0xFF03;
 ERR_TOO_LONG = 0xFF04;
+ERR_FAIL = 0xFF05
 
 GET_ID = 0x01;
 GET_ID_RSP = 0x02;
@@ -48,6 +49,11 @@ def respond(request: packet_t) -> None:
 		package_id = package.find_id(request.data);
 		res._type = GET_ID_RSP;
 		res.append(package_id.to_bytes(8, "little"));
+	elif (request._type == GET_INFO):
+		if (len(request.data) != 8):
+			res._type = ERR_INV_ID;
+		else:
+			package.send_info(res, int.from_bytes(request.data, "little"));
 	else:
 		res._type = ERR_UNKNOWN_REQUEST;
 

@@ -1,4 +1,5 @@
 import json
+import packet
 import os
 import shutil
 
@@ -23,3 +24,23 @@ def find_id(name: bytes) -> int:
 		return id;
 	except:
 		return 0;
+
+def send_info(packet: packet.packet_t, id: int) -> bytes:
+	try:
+		try:
+			p_name = id_to_name[id];
+		except:
+			packet._type = packet.ERR_INV_ID;
+			return ;
+
+		size = os.path.getsize(packages[p_name][1]);
+		desc = packages[p_name][0];
+		packet._type = packet.GET_INFO_RSP;
+		packet.append(size.to_bytes(8, "little"));
+		if (len(desc) > 1000):
+			desc = desc[:1000]
+		packet.append(desc);
+		return ;
+	except:
+		packet._type = packet.ERR_FAIL;
+		return ;
