@@ -8,11 +8,11 @@ id_to_name: dict[int, str] = {}
 
 def init_packages() -> None:
 	global packages
-	with open("./packages.json", "rb") as f:
+	with open("./packages.json", "r") as f:
 		packages = json.load(f);
 
 def exit_packages() -> None:
-	with open("./packages.json.new", "wb") as f:
+	with open("./packages.json.new", "w") as f:
 		json.dump(packages, f);
 	shutil.copyfile("./packages.json.new", "./packages.json");
 	os.remove("./packages.json.new");
