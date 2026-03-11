@@ -1,4 +1,4 @@
-import packages
+import package
 
 MAX_PACKET_SIZE = 1300
 
@@ -24,6 +24,32 @@ class packet_t:
 		data_res += self.data;
 		return (data_res, (self.ip, self.port));
 	
+ERR_UNKNOWN_REQUEST = 0xFFFF;
+ERR_UPDATING = 0xFF00;
+ERR_INV_ID = 0xFF01;
+ERR_OUT_RANGE = 0xFF03;
+ERR_TOO_LONG = 0xFF04;
+
+GET_ID = 0x01;
+GET_ID_RSP = 0x02;
+
+GET_INFO = 0x03;
+GET_INFO_RSP = 0x04;
+
+READ_PART = 0x07;
+READ_PART_RSP = 0x08;
+
+GET_DEP = 0x09;
+GET_DEP_RSP = 0x0A;
 
 def respond(request: packet_t) -> None:
 	...	
+	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
+	match request._type:
+		case GET_ID:
+			package_id = package.find_id(request.data);
+			res.append(package_id.to_bytes(6, "little");
+		case _:
+			res._type = ERR_UNKNOWN_REQUEST;
+
+	packets_to_send.append(res);

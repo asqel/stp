@@ -1,4 +1,5 @@
 import socket as sock
+import package
 import select
 from random import randint
 import time
@@ -26,6 +27,7 @@ def treat_packet(_packet):
 def main() -> None:
 	server_fd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
 	server_fd.bind(('', PORT));
+	print(f"Server listening on {PORT}");
 	while 1:
 		readable = [];
 		writable = [];
@@ -41,7 +43,9 @@ def main() -> None:
 			server_fd.sendto(*packet.packets_to_send.pop(0).to_socket_packet());
 
 if __name__ == '__main__':
+	package.init_packages();
 	try:
 		main();
 	except:
 		...
+	package.exit_packages();

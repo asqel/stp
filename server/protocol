@@ -1,4 +1,4 @@
-MAX PACK SIZE = 1300 (type and data included)
+MAX PACK SIZE = 1300 (id, type and data included)
 
 every number shall be transfered in little endiannes
 
@@ -12,7 +12,7 @@ packet:
 
 get package id:
 	-> 0x01
-	-> package name (\0 terminated)
+	-> package name (end of the packet)
 
 	<- 0x02
 	<- package id (8 bytes, == 0 if notfound)
@@ -46,8 +46,6 @@ read package part:
 			<- 0xFF03
 		length too long:
 			<- 0xFF04
-		no package open:
-			<- 0xFF05
 
 get package dependencies:
 	-> 0x09
@@ -62,3 +60,5 @@ get package dependencies:
 		invalid package id:
 			<- 0xFF01
 		
+
+type 0xFFFF: unknown request
