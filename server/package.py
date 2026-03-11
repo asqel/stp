@@ -25,12 +25,11 @@ def find_id(name: bytes) -> int:
 	except:
 		return 0;
 
-def send_info(packet: packet.packet_t, id: int) -> bytes:
+def send_info(packet: packet.packet_t, id: int) -> None:
 	try:
-		try:
-			p_name = id_to_name[id];
-		except:
-			packet._type = packet.ERR_INV_ID;
+		p_name = id_to_name.get(id, "");
+		if not p_name:
+			packet._type = packet.ERR_INV_ID
 			return ;
 
 		size = os.path.getsize(packages[p_name][1]);
@@ -41,6 +40,32 @@ def send_info(packet: packet.packet_t, id: int) -> bytes:
 			desc = desc[:1000]
 		packet.append(desc);
 		return ;
+
+	except:
+		packet._type = packet.ERR_FAIL;
+		return ;
+
+def send_part(packet: packet.packet_t, id: int, offset: int, _len: int) -> None:
+	try:
+		p_name = id_to_name.get(id, "");
+		if not p_name:
+			packet._type = packet.ERR_INV_ID
+			return ;
+		if _len + 2 + 6 > packet.MAX_PACKET_SIZE:
+			packet._type = packet.ERR_TOO_LONG;
+			return ;
+		size = os.path.getsize(packages[p_name][1]);
+		if offset >= size:
+			packet._type = packet.ERR_OUT_RANGE;
+			return ;
+		part = b'';
+		with open(packages[p_name][1], "rb") as f:
+			f.seek(offset, 0);
+			part = f.read(_len);
+		packet._type = packet.READ_PART_RSP;
+		packet.append(part);
+		return ;
+		
 	except:
 		packet._type = packet.ERR_FAIL;
 		return ;
