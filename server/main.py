@@ -7,7 +7,7 @@ import packet
 
 
 TIMEOUT = 5 * 60
-PORT = 24042
+PORT = 42024
 
 
 def treat_packet(_packet):

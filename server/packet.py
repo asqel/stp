@@ -46,7 +46,8 @@ def respond(request: packet_t) -> None:
 	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
 	if (request._type == GET_ID):
 		package_id = package.find_id(request.data);
-		res.append(package_id.to_bytes(6, "little"));
+		res._type = GET_ID_RSP;
+		res.append(package_id.to_bytes(8, "little"));
 	else:
 		res._type = ERR_UNKNOWN_REQUEST;
 
