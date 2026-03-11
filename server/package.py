@@ -44,14 +44,11 @@ def send_info(packet: pck.packet_t, id: int) -> None:
 		return ;
 
 	except Exception as e:
-		print(e, type(e));
 		packet._type = pck.ERR_FAIL;
 		return ;
 
 def send_part(packet: pck.packet_t, id: int, offset: int, _len: int) -> None:
 	try:
-		print(f"aa {id}");
-		print(id_to_name);
 		p_name = id_to_name.get(id, "");
 		if not p_name:
 			packet._type = pck.ERR_INV_ID
@@ -72,9 +69,21 @@ def send_part(packet: pck.packet_t, id: int, offset: int, _len: int) -> None:
 		return ;
 		
 	except Exception as e:
-		print(e, type(e));
 		packet._type = pck.ERR_FAIL;
 		return ;
 	
 def send_dep(packet: pck.packet_t, id: int) -> None:
-	...
+	try:
+		p_name = id_to_name.get(id, "");
+		if not p_name:
+			packet._type = pck.ERR_INV_ID
+			return ;
+		dep = b'';
+		for i in packages[p_name][3]:
+			dep += i.to_bytes(8, "little");
+		packet.append(dep);
+		dep._type = pck.GET_DEP_RSP;
+		return ;
+	except Exception as e:
+		packet._type = pck.ERR_FAIL;
+		return ;

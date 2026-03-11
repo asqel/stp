@@ -45,6 +45,7 @@ GET_DEP_RSP = 0x0A;
 
 def respond(request: packet_t) -> None:
 	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
+
 	if (request._type == GET_ID):
 		package_id = package.find_id(request.data);
 		res._type = GET_ID_RSP;
@@ -67,6 +68,12 @@ def respond(request: packet_t) -> None:
 				int.from_bytes(request.data[16:], "little")
 			);
 
+	elif (request._type == GET_DEP):
+		if (len(request.data) != 8):
+			res._type = ERR_UNKNOWN_REQUEST;
+		else:
+			package.send_dep(res, int.from_bytes(request.data, "little"));
+		
 	else:
 		res._type = ERR_UNKNOWN_REQUEST;
 
