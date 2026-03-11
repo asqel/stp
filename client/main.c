@@ -26,6 +26,7 @@
 #define GET_DEP_RSP     0x0A
 
 #define STP_PKG_SIZE    1300
+#define STP_DESC_SIZE   1000
 
 #define DEFAULT_IP "asqel.ddns.net:42024"
 
@@ -35,20 +36,58 @@ int G_FD;
 #define R64_TO_TYPE(r) (((r) >> 48) & 0xFFFF)
 #define TYPE_IS_ERR(t) (((t) & 0xFF00) == 0xFF00)
 
+
 /*******************************************
  *                                        *
  *   STP CLIENT SIDE PROTOCOL FUNCTIONS   *
  *                                        *
 ********************************************/
 
+static uint64_t get_random_xid(void) {
+    return (((uint64_t) rand() << 32) | rand()) & 0xFFFFFFFFFF;
+}
+
+static void purge_receive_buffer(void) {
+    // [probably useless] purge the buffer to read only the new response
+    uint8_t buf[STP_PKG_SIZE];
+    while (recv(G_FD, buf, sizeof(buf), MSG_DONTWAIT) > 0);
+}
+
 #define RETERR(...) return (fprintf(stderr, __VA_ARGS__), -1)
 
-long get_pkg_id(uint64_t xid, const char *name) {
+static int check_response(uint8_t *buf, int buf_len, uint64_t expected_xid, uint16_t expected_type) {
+    uint64_t r;
+
+    if (buf_len < 0)
+        RETERR("[protocol err] recv error %d\n", errno);
+
+    if (buf_len < 8)
+        RETERR("[protocol err] recv too short\n");
+
+    memcpy(&r, buf, 8);
+
+    if (R64_TO_XID(r) != expected_xid)
+        RETERR("[protocol err] wrong xid\n");
+
+    uint16_t resp_type = R64_TO_TYPE(r);
+
+    if (TYPE_IS_ERR(resp_type))
+        RETERR("[protocol err] error response %x\n", resp_type);
+
+    if (resp_type != expected_type)
+        RETERR("[protocol err] unexpected response type %x\n", resp_type);
+
+    return 0;   
+}
+
+int64_t get_pkg_id(const char *name) {
     if (strlen(name) > STP_PKG_SIZE - 8)
-        RETERR("[get_pkg_id] name too long\n");
+        RETERR("[protocol err] name too long\n");
 
     uint8_t buf[STP_PKG_SIZE];
     uint64_t r = GET_ID;
+
+    uint64_t xid = get_random_xid();
 
     int s = strlen(name);
 
@@ -56,32 +95,51 @@ long get_pkg_id(uint64_t xid, const char *name) {
     memcpy(buf + 6, &r, 2);
     memcpy(buf + 8, name, s);
 
+    purge_receive_buffer();
+
     if (send(G_FD, buf, 8 + s, 0) == -1)
-        RETERR("[get_pkg_id] send error %d\n", errno);
+        RETERR("[protocol err] send error %d\n", errno);
 
     int rlen = recv(G_FD, buf, 1300, 0);
 
-    if (rlen < 0)
-        RETERR("[get_pkg_id] recv error %d\n", errno);
-
-    if (rlen < 8)
-        RETERR("[get_pkg_id] recv too short\n");
-
-    memcpy(&r, buf, 8);
-
-    if (R64_TO_XID(r) != xid)
-        RETERR("[get_pkg_id] wrong xid, expected %"PRId64" got %"PRId64"\n", xid, R64_TO_XID(r));
-
-    uint16_t resp_type = R64_TO_TYPE(r);
-
-    if (TYPE_IS_ERR(resp_type))
-        RETERR("[get_pkg_id] error response %x\n", resp_type);
-
-    if (resp_type != GET_ID_RSP)
-        RETERR("[get_pkg_id] unexpected response type %x\n", resp_type);
+    if (check_response(buf, rlen, xid, GET_ID_RSP))
+        return -1;
 
     memcpy(&r, buf + 8, 8);
     return r;
+}
+
+int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns size
+    uint8_t buf[STP_PKG_SIZE];
+    uint64_t r = GET_INFO;
+
+    uint64_t xid = get_random_xid();
+
+    memcpy(buf, &xid, 6);
+    memcpy(buf + 6, &r, 2);
+    memcpy(buf + 8, &id, 8);
+
+    purge_receive_buffer();
+
+    if (send(G_FD, buf, 16, 0) == -1)
+        RETERR("[protocol err] send error %d\n", errno);
+
+    int rlen = recv(G_FD, buf, 1300, 0);
+
+    if (check_response(buf, rlen, xid, GET_INFO_RSP))
+        return -1;
+
+    uint64_t file_size;
+    memcpy(&file_size, buf + 8, 8);
+
+    int max_copy_size = rlen - 16;
+    if (max_copy_size > (int) buf_size - 1) // -1 for the null terminator
+        max_copy_size = (int) buf_size - 1;
+
+    memcpy(info_buf, buf + 16, max_copy_size);
+    info_buf[max_copy_size] = '\0';
+
+    return file_size;
 }
 
 /*******************************************
@@ -167,8 +225,19 @@ int main(int argc, char **argv) {
         close(fd);
         return 1;
     }
+    
+    int64_t id = get_pkg_id("tcc");
 
-    printf("aaaa %ld\n", get_pkg_id(99, "tcc"));
+    if (id == -1)
+        return 1;
+
+    printf("id = %"PRId64"\n", id);
+
+    char info_buf[STP_DESC_SIZE + 1];
+    int64_t file_size = get_pkg_info(id, info_buf, sizeof(info_buf));
+
+    printf("file size = %"PRId64"\n", file_size);
+    printf("info = %s\n", info_buf);
 
     close(fd);
     return 0;
