@@ -56,3 +56,6 @@ dkms.conf
 
 # pycache
 __pycache__/
+
+# client binaries
+client
