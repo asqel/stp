@@ -6,6 +6,7 @@ packages: dict[str, list[str, str, int]] = {}; # name: [desc, path, id]
 id_to_name: dict[int, str] = {}
 
 def init_packages() -> None:
+	global packages
 	with open("./packages.json", "rb") as f:
 		packages = json.load(f);
 
