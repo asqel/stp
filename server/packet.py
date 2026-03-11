@@ -43,13 +43,11 @@ GET_DEP = 0x09;
 GET_DEP_RSP = 0x0A;
 
 def respond(request: packet_t) -> None:
-	...	
 	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
-	match request._type:
-		case GET_ID:
-			package_id = package.find_id(request.data);
-			res.append(package_id.to_bytes(6, "little");
-		case _:
-			res._type = ERR_UNKNOWN_REQUEST;
+	if (request._type == GET_ID):
+		package_id = package.find_id(request.data);
+		res.append(package_id.to_bytes(6, "little"));
+	else:
+		res._type = ERR_UNKNOWN_REQUEST;
 
 	packets_to_send.append(res);
