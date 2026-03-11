@@ -12,6 +12,11 @@ def init_packages() -> None:
 		packages = json.load(f);
 	for i, k in packages.items():
 		id_to_name[k[2]] = i;
+		if len(k[3]) * 8 + 6 + 2 > pck.MAX_PACKET_SIZE:
+			print("package {i} dependencies will be truncated");
+			max_len = pck.MAX_PACKET_SIZE - 6 - 2;
+			max_len = max_len // 8;
+			k[3] = k[3][:max_len];
 
 def exit_packages() -> None:
 	with open("./packages.json.new", "w") as f:
