@@ -12,6 +12,7 @@
 #define ERR_INV_ID          0xFF01
 #define ERR_OUT_RANGE       0xFF03
 #define ERR_TOO_LONG        0xFF04
+#define ERR_FAIL            0xFF05
 
 #define GET_ID          0x01
 #define GET_ID_RSP      0x02
@@ -144,6 +145,33 @@ int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns s
 
 /*******************************************
  *                                        *
+ *           ERROR MESSAGES               *
+ *                                        *
+********************************************/
+
+char *error_to_str(uint16_t error) {
+	if (error >> 8 != 0xFF)
+		return "Success";
+	switch (error) {
+		case ERR_UNKNOWN_REQUEST:
+			return "Invalid request";
+		case ERR_UPDATING:
+			return "Package is being updated";
+		case ERR_INV_ID:
+			return "Invalide package id";
+		case ERR_OUT_RANGE:
+			return "Offset out of range";
+		case ERR_TOO_LONG:
+			return "Package part too long";
+		case ERR_FAIL:
+			return "Internal server failure;
+		default:
+			return "Unknown error";
+	}
+}
+
+/*******************************************
+ *                                        *
  *           COMMAND LINE STUFF           *
  *                                        *
 ********************************************/
@@ -170,7 +198,7 @@ int parse_ipandport(char *exe, const char *str, struct sockaddr_in *addr) {
     ip[ip_len] = '\0';
 
     port = atoi(p + 1);
-    if (port == 0 || port > 65535) {
+    if (port <= 0 || port > 65535) {
         fprintf(stderr, "%s: '%s' invalid port\n", exe, p + 1);
         return -1;
     }
