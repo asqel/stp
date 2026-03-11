@@ -46,6 +46,8 @@ if __name__ == '__main__':
 	package.init_packages();
 	try:
 		main();
-	except:
-		...
+	except KeyboardInterrupt:
+		print("\nclosing stp server");
+	except Exception as e:
+		print(e, type(e));
 	package.exit_packages();

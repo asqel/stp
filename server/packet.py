@@ -49,11 +49,24 @@ def respond(request: packet_t) -> None:
 		package_id = package.find_id(request.data);
 		res._type = GET_ID_RSP;
 		res.append(package_id.to_bytes(8, "little"));
+
 	elif (request._type == GET_INFO):
 		if (len(request.data) != 8):
-			res._type = ERR_INV_ID;
+			res._type = ERR_UNKNOWN_REQUEST;
 		else:
 			package.send_info(res, int.from_bytes(request.data, "little"));
+
+	elif (request._type == READ_PART):
+		if (len(request.data) != (8 + 8 + 2)):
+			res._type = ERR_UNKNOWN_REQUEST;
+		else:
+			package.send_part(
+				res,
+				int.from_bytes(request.data[:8], "little"),
+				int.from_bytes(request.data[8:16], "little"),
+				int.from_bytes(request.data[16:], "little")
+			);
+
 	else:
 		res._type = ERR_UNKNOWN_REQUEST;
 
