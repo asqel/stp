@@ -87,7 +87,7 @@ def send_dep(packet: pck.packet_t, id: int) -> None:
 		for i in packages[p_name][3]:
 			dep += i.to_bytes(8, "little");
 		packet.append(dep);
-		dep._type = pck.GET_DEP_RSP;
+		packet._type = pck.GET_DEP_RSP;
 		return ;
 	except Exception as e:
 		packet._type = pck.ERR_FAIL;

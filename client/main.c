@@ -26,8 +26,10 @@
 #define GET_DEP         0x09
 #define GET_DEP_RSP     0x0A
 
-#define STP_PKG_SIZE    1300
-#define STP_DESC_SIZE   1000
+
+#define STP_PKT_SIZE        1300
+#define STP_MAX_DESC_SIZE   1000
+#define STP_MAX_DEPS        (STP_PKT_SIZE - 16) / 8
 
 #define DEFAULT_IP "asqel.ddns.net:42024"
 
@@ -37,6 +39,32 @@ int G_FD;
 #define R64_TO_TYPE(r) (((r) >> 48) & 0xFFFF)
 #define TYPE_IS_ERR(t) (((t) & 0xFF00) == 0xFF00)
 
+/*******************************************
+ *                                        *
+ *             ERROR MESSAGES             *
+ *                                        *
+********************************************/
+
+char *error_to_str(uint16_t error) {
+	if (error >> 8 != 0xFF)
+		return "Success";
+	switch (error) {
+		case ERR_UNKNOWN_REQUEST:
+			return "Invalid request";
+		case ERR_UPDATING:
+			return "Package is being updated";
+		case ERR_INV_ID:
+			return "Invalide package id";
+		case ERR_OUT_RANGE:
+			return "Offset out of range";
+		case ERR_TOO_LONG:
+			return "Package part too long";
+		case ERR_FAIL:
+			return "Internal server failure";
+		default:
+			return "Unknown error";
+	}
+}
 
 /*******************************************
  *                                        *
@@ -50,7 +78,7 @@ static uint64_t get_random_xid(void) {
 
 static void purge_receive_buffer(void) {
     // [probably useless] purge the buffer to read only the new response
-    uint8_t buf[STP_PKG_SIZE];
+    uint8_t buf[STP_PKT_SIZE];
     while (recv(G_FD, buf, sizeof(buf), MSG_DONTWAIT) > 0);
 }
 
@@ -73,7 +101,7 @@ static int check_response(uint8_t *buf, int buf_len, uint64_t expected_xid, uint
     uint16_t resp_type = R64_TO_TYPE(r);
 
     if (TYPE_IS_ERR(resp_type))
-        RETERR("[protocol err] error response %x\n", resp_type);
+        RETERR("[protocol err] error response received: %s (0x%04x)\n", error_to_str(resp_type), resp_type);
 
     if (resp_type != expected_type)
         RETERR("[protocol err] unexpected response type %x\n", resp_type);
@@ -82,10 +110,10 @@ static int check_response(uint8_t *buf, int buf_len, uint64_t expected_xid, uint
 }
 
 int64_t get_pkg_id(const char *name) {
-    if (strlen(name) > STP_PKG_SIZE - 8)
+    if (strlen(name) > STP_PKT_SIZE - 8)
         RETERR("[protocol err] name too long\n");
 
-    uint8_t buf[STP_PKG_SIZE];
+    uint8_t buf[STP_PKT_SIZE];
     uint64_t r = GET_ID;
 
     uint64_t xid = get_random_xid();
@@ -106,12 +134,15 @@ int64_t get_pkg_id(const char *name) {
     if (check_response(buf, rlen, xid, GET_ID_RSP))
         return -1;
 
+    if (rlen != 16)
+        RETERR("[protocol err] recv wrong length\n");
+
     memcpy(&r, buf + 8, 8);
     return r;
 }
 
-int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns size
-    uint8_t buf[STP_PKG_SIZE];
+int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns file size
+    uint8_t buf[STP_PKT_SIZE];
     uint64_t r = GET_INFO;
 
     uint64_t xid = get_random_xid();
@@ -130,6 +161,9 @@ int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns s
     if (check_response(buf, rlen, xid, GET_INFO_RSP))
         return -1;
 
+    if (rlen < 16)
+        RETERR("[protocol err] recv too short\n");
+
     uint64_t file_size;
     memcpy(&file_size, buf + 8, 8);
 
@@ -143,31 +177,38 @@ int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns s
     return file_size;
 }
 
-/*******************************************
- *                                        *
- *           ERROR MESSAGES               *
- *                                        *
-********************************************/
+int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) { // returns number of deps
+    uint8_t buf[STP_PKT_SIZE];
+    uint64_t r = GET_DEP;
 
-char *error_to_str(uint16_t error) {
-	if (error >> 8 != 0xFF)
-		return "Success";
-	switch (error) {
-		case ERR_UNKNOWN_REQUEST:
-			return "Invalid request";
-		case ERR_UPDATING:
-			return "Package is being updated";
-		case ERR_INV_ID:
-			return "Invalide package id";
-		case ERR_OUT_RANGE:
-			return "Offset out of range";
-		case ERR_TOO_LONG:
-			return "Package part too long";
-		case ERR_FAIL:
-			return "Internal server failure;
-		default:
-			return "Unknown error";
-	}
+    uint64_t xid = get_random_xid();
+
+    memcpy(buf, &xid, 6);
+    memcpy(buf + 6, &r, 2);
+    memcpy(buf + 8, &id, 8);
+
+    purge_receive_buffer();
+
+    if (send(G_FD, buf, 16, 0) == -1)
+        RETERR("[protocol err] send error %d\n", errno);
+
+    int rlen = recv(G_FD, buf, 1300, 0);
+
+    if (check_response(buf, rlen, xid, GET_DEP_RSP))
+        return -1;
+
+    int num_deps = (rlen - 8) / 8;
+
+    if (num_deps > (int) buf_size)
+        num_deps = (int) buf_size;
+
+    for (int i = 0; i < num_deps; i++) {
+        int64_t dep_id;
+        memcpy(&dep_id, buf + 8 + i * 8, 8);
+        dep_buf[i] = dep_id;
+    }
+
+    return num_deps;
 }
 
 /*******************************************
@@ -256,16 +297,32 @@ int main(int argc, char **argv) {
     
     int64_t id = get_pkg_id("tcc");
 
+    printf("id = %"PRId64"\n", id);
+
     if (id == -1)
         return 1;
 
-    printf("id = %"PRId64"\n", id);
-
-    char info_buf[STP_DESC_SIZE + 1];
+    char info_buf[STP_MAX_DESC_SIZE + 1];
     int64_t file_size = get_pkg_info(id, info_buf, sizeof(info_buf));
 
     printf("file size = %"PRId64"\n", file_size);
+
+    if (file_size == -1)
+        return 1;
+
     printf("info = %s\n", info_buf);
+
+    int64_t deps[STP_MAX_DEPS];
+    int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
+
+    printf("num_deps = %d\n", num_deps);
+
+    if (num_deps == -1)
+        return 1;
+
+    for (int i = 0; i < num_deps; i++) {
+        printf("dep %d: %"PRId64"\n", i, deps[i]);
+    }
 
     close(fd);
     return 0;
