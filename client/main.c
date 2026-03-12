@@ -6,7 +6,24 @@
 #include <netdb.h>
 #include <errno.h>
 #include <stdio.h>
+#include <poll.h>
 
+// client setings (editable)
+#define DEFAULT_IP "asqel.ddns.net:42024"
+#define RECV_TIMEOUT_MS 2000 // stop waiting for a server response after this delay
+#define MAX_RETRY_COUNT 3    // give up after this many retries (after a timeout)
+
+// protocol types
+#define GET_ID          0x01
+#define GET_ID_RSP      0x02
+#define GET_INFO        0x03
+#define GET_INFO_RSP    0x04
+#define READ_PART       0x07
+#define READ_PART_RSP   0x08
+#define GET_DEP         0x09
+#define GET_DEP_RSP     0x0A
+
+// protocol error codes
 #define ERR_UNKNOWN_REQUEST 0xFFFF
 #define ERR_UPDATING        0xFF00
 #define ERR_INV_ID          0xFF01
@@ -14,31 +31,18 @@
 #define ERR_TOO_LONG        0xFF04
 #define ERR_FAIL            0xFF05
 
-#define GET_ID          0x01
-#define GET_ID_RSP      0x02
-
-#define GET_INFO        0x03
-#define GET_INFO_RSP    0x04
-
-#define READ_PART       0x07
-#define READ_PART_RSP   0x08
-
-#define GET_DEP         0x09
-#define GET_DEP_RSP     0x0A
-
-
+// protocol limits
 #define STP_PKT_SIZE        1300
 #define STP_MAX_DESC_SIZE   1000
 #define STP_MAX_DEPS        (STP_PKT_SIZE - 8) / 8
 #define STP_MAX_PART_SIZE   (STP_PKT_SIZE - 8)
 
-#define DEFAULT_IP "asqel.ddns.net:42024"
-
-int G_FD;
-
+// XID and TYPE decoding macros
 #define R64_TO_XID(r) ((r) & 0xFFFFFFFFFF)
 #define R64_TO_TYPE(r) (((r) >> 48) & 0xFFFF)
 #define TYPE_IS_ERR(t) (((t) & 0xFF00) == 0xFF00)
+
+int G_FD;
 
 /*******************************************
  *                                        *
@@ -69,7 +73,7 @@ char *error_to_str(uint16_t error) {
 
 /*******************************************
  *                                        *
- *   STP CLIENT SIDE PROTOCOL FUNCTIONS   *
+ *             PROTOCOL UTILS             *
  *                                        *
 ********************************************/
 
@@ -79,60 +83,103 @@ static uint64_t get_random_xid(void) {
 
 static void purge_receive_buffer(void) {
     // [probably useless] purge the buffer to read only the new response
-    uint8_t buf[STP_PKT_SIZE];
-    while (recv(G_FD, buf, sizeof(buf), MSG_DONTWAIT) > 0);
+
+    struct pollfd pfd = { .fd = G_FD, .events = POLLIN };
+    uint8_t tmp[STP_PKT_SIZE];
+
+    while (poll(&pfd, 1, 0) > 0) {
+        recv(G_FD, tmp, sizeof(tmp), 0);
+    }
+}
+
+static int timeout_recv(uint8_t *buf, size_t buf_size) {
+    // returns -2 on timeout or the normal recv return value
+
+    struct pollfd pfd = { .fd = G_FD, .events = POLLIN };
+
+    int poll_ret = poll(&pfd, 1, RECV_TIMEOUT_MS);
+
+    if (poll_ret == -1)
+        return -1;
+    else if (poll_ret == 0)
+        return -2;
+
+    return recv(G_FD, buf, buf_size, 0);
 }
 
 #define RETERR(...) return (fprintf(stderr, __VA_ARGS__), -1)
 
-static int check_response(uint8_t *buf, int buf_len, uint64_t expected_xid, uint16_t expected_type) {
-    uint64_t r;
+static int stp_sarap(uint8_t *buf, int buf_len, uint16_t type) {
+    // sarap: send and receive and process
 
-    if (buf_len < 0)
+    int retry_count = 0;
+
+    send_and_wait:
+    uint64_t xid = get_random_xid();
+    uint64_t r = type;
+
+    memcpy(buf, &xid, 6);
+    memcpy(buf + 6, &r, 2);
+
+    purge_receive_buffer();
+
+    if (send(G_FD, buf, buf_len, 0) == -1)
+        RETERR("[protocol err] send error %d\n", errno);
+
+    wait_for_response:
+    int rlen = timeout_recv(buf, 1300);
+
+    if (rlen == -2) {
+        if (retry_count > MAX_RETRY_COUNT)
+            RETERR("[protocol err] recv timeout, max retry count reached\n");
+        fprintf(stderr, "[protocol warn] recv timeout, retrying... (%d/%d)\n",
+                    retry_count + 1, MAX_RETRY_COUNT);
+        retry_count++;
+        goto send_and_wait;
+    }
+
+    if (rlen < 0)
         RETERR("[protocol err] recv error %d\n", errno);
 
-    if (buf_len < 8)
+    if (rlen < 8)
         RETERR("[protocol err] recv too short\n");
 
     memcpy(&r, buf, 8);
 
-    if (R64_TO_XID(r) != expected_xid)
-        RETERR("[protocol err] wrong xid\n");
+    if (R64_TO_XID(r) != xid) {
+        fprintf(stderr, "[protocol warn] wrong xid, waiting for response again\n");
+        goto wait_for_response;
+    }
 
     uint16_t resp_type = R64_TO_TYPE(r);
 
     if (TYPE_IS_ERR(resp_type))
         RETERR("[protocol err] error response received: %s (0x%04x)\n", error_to_str(resp_type), resp_type);
 
-    if (resp_type != expected_type)
+    if (resp_type != type + 1)
         RETERR("[protocol err] unexpected response type %x\n", resp_type);
 
-    return 0;   
+    return rlen;
 }
+
+/*******************************************
+ *                                        *
+ *   STP CLIENT SIDE PROTOCOL FUNCTIONS   *
+ *                                        *
+********************************************/
 
 int64_t get_pkg_id(const char *name) {
     if (strlen(name) > STP_PKT_SIZE - 8)
         RETERR("[protocol err] name too long\n");
 
     uint8_t buf[STP_PKT_SIZE];
-    uint64_t r = GET_ID;
-
-    uint64_t xid = get_random_xid();
+    uint64_t r;
 
     int s = strlen(name);
-
-    memcpy(buf, &xid, 6);
-    memcpy(buf + 6, &r, 2);
     memcpy(buf + 8, name, s);
 
-    purge_receive_buffer();
-
-    if (send(G_FD, buf, 8 + s, 0) == -1)
-        RETERR("[protocol err] send error %d\n", errno);
-
-    int rlen = recv(G_FD, buf, 1300, 0);
-
-    if (check_response(buf, rlen, xid, GET_ID_RSP))
+    int rlen = stp_sarap(buf, 8 + s, GET_ID);
+    if (rlen < 0)
         return -1;
 
     if (rlen != 16)
@@ -142,24 +189,14 @@ int64_t get_pkg_id(const char *name) {
     return r;
 }
 
-int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns file size
+int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) {
+    // returns file size
+
     uint8_t buf[STP_PKT_SIZE];
-    uint64_t r = GET_INFO;
-
-    uint64_t xid = get_random_xid();
-
-    memcpy(buf, &xid, 6);
-    memcpy(buf + 6, &r, 2);
     memcpy(buf + 8, &id, 8);
 
-    purge_receive_buffer();
-
-    if (send(G_FD, buf, 16, 0) == -1)
-        RETERR("[protocol err] send error %d\n", errno);
-
-    int rlen = recv(G_FD, buf, 1300, 0);
-
-    if (check_response(buf, rlen, xid, GET_INFO_RSP))
+    int rlen = stp_sarap(buf, 16, GET_INFO);
+    if (rlen < 0)
         return -1;
 
     if (rlen < 16)
@@ -178,24 +215,14 @@ int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) { // returns f
     return file_size;
 }
 
-int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) { // returns number of deps
+int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
+    // returns number of dependencies
+
     uint8_t buf[STP_PKT_SIZE];
-    uint64_t r = GET_DEP;
-
-    uint64_t xid = get_random_xid();
-
-    memcpy(buf, &xid, 6);
-    memcpy(buf + 6, &r, 2);
     memcpy(buf + 8, &id, 8);
 
-    purge_receive_buffer();
-
-    if (send(G_FD, buf, 16, 0) == -1)
-        RETERR("[protocol err] send error %d\n", errno);
-
-    int rlen = recv(G_FD, buf, 1300, 0);
-
-    if (check_response(buf, rlen, xid, GET_DEP_RSP))
+    int rlen = stp_sarap(buf, 16, GET_DEP);
+    if (rlen < 0)
         return -1;
 
     int num_deps = (rlen - 8) / 8;
@@ -214,8 +241,6 @@ int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) { // returns num
 
 int download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
     uint8_t buf[STP_PKT_SIZE];
-    uint64_t r = READ_PART;
-
     int64_t offset = 0;
 
     // open the local file for writing
@@ -226,29 +251,20 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
     }
 
     while (offset < file_size) {
-        uint64_t xid = get_random_xid();
-
         int part_size = (int) (file_size - offset);
         if (part_size > STP_MAX_PART_SIZE)
             part_size = STP_MAX_PART_SIZE;
 
-        memcpy(buf, &xid, 6);
-        memcpy(buf + 6, &r, 2);
         memcpy(buf + 8, &id, 8);
         memcpy(buf + 16, &offset, 8);
         memcpy(buf + 24, &part_size, 2);
 
-        purge_receive_buffer();
+        int rlen = stp_sarap(buf, 26, READ_PART);
 
-        if (send(G_FD, buf, 26, 0) == -1) {
+        if (rlen < 0) {
             fclose(f);
-            RETERR("[protocol err] send error %d\n", errno);
-        }
-
-        int rlen = recv(G_FD, buf, 1300, 0);
-
-        if (check_response(buf, rlen, xid, READ_PART_RSP))
             return -1;
+        }
 
         if (rlen < 8 + part_size) {
             fclose(f);
@@ -269,7 +285,7 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
 
     printf("\n");
     fclose(f);
-    return 0;   
+    return 0;
 }
 
 /*******************************************
@@ -355,7 +371,7 @@ int main(int argc, char **argv) {
         close(fd);
         return 1;
     }
-    
+
     int64_t id = get_pkg_id("tcc");
 
     printf("id = %"PRId64"\n", id);
@@ -381,9 +397,9 @@ int main(int argc, char **argv) {
     if (num_deps == -1)
         return 1;
 
-    for (int i = 0; i < num_deps; i++) 
+    for (int i = 0; i < num_deps; i++)
         printf("dep %d: %"PRId64"\n", i, deps[i]);
-    
+
 
     if (download_pkg(id, "tcc.txt", file_size))
         return 1;
