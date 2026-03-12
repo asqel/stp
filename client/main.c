@@ -37,7 +37,7 @@
 #define STP_MAX_DESC_SIZE   1000
 #define STP_MAX_DEPS        (STP_PKT_SIZE - 8) / 8
 #define STP_MAX_PART_SIZE   (STP_PKT_SIZE - 8)
-#define STP_MAX_NAME_SIZE   64 // TODO verify after the new get_info
+#define STP_MAX_NAME_SIZE   64
 
 // XID and TYPE decoding macros
 #define R64_TO_XID(r) ((r) & 0xFFFFFFFFFF)
@@ -175,13 +175,14 @@ int64_t get_pkg_id(const char *name) {
     if (strlen(name) > STP_MAX_NAME_SIZE)
         return 0; // too long to exist, 0 == not found
 
-    uint8_t buf[STP_PKT_SIZE];
     uint64_t r;
+    uint8_t buf[STP_PKT_SIZE];
+    memset(buf, 0, 8 + STP_MAX_NAME_SIZE);
 
     int s = strlen(name);
     memcpy(buf + 8, name, s);
 
-    int rlen = stp_sarap(buf, 8 + s, GET_ID);
+    int rlen = stp_sarap(buf, 8 + STP_MAX_NAME_SIZE, GET_ID);
     if (rlen < 0)
         return -1;
 
@@ -242,53 +243,7 @@ int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
     return num_deps;
 }
 
-int download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
-    uint8_t buf[STP_PKT_SIZE];
-    int64_t offset = 0;
-
-    // open the local file for writing
-    FILE *f = fopen(dest_path, "wb");
-    if (!f)
-        RETERR("failed to open local file for writing\n");
-
-    while (offset < file_size) {
-        int part_size = (int) (file_size - offset);
-        if (part_size > STP_MAX_PART_SIZE)
-            part_size = STP_MAX_PART_SIZE;
-
-        memcpy(buf + 8, &id, 8);
-        memcpy(buf + 16, &offset, 8);
-        memcpy(buf + 24, &part_size, 2);
-
-        int rlen = stp_sarap(buf, 26, READ_PART);
-
-        if (rlen < 0)
-            goto error;
-
-        if (rlen < 8 + part_size)
-            GOTOERR(error, "[protocol err] recv too short\n");
-
-        size_t written = fwrite(buf + 8, 1, part_size, f);
-        if (written != (size_t) part_size)
-            GOTOERR(error, "failed to write to local file\n");
-
-        offset += part_size;
-
-        printf("downloaded %"PRId64"/%"PRId64" bytes\r", offset, file_size);
-        fflush(stdout);
-    }
-
-    printf("\n");
-    fclose(f);
-    return 0;
-
-    error:
-    fclose(f);
-    remove(dest_path);
-    return -1;
-}
-
-int fast_download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_size) {
+static int fast_download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_size) {
     uint8_t buf[STP_PKT_SIZE];
     uint64_t r = READ_PART;
 
