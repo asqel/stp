@@ -29,7 +29,8 @@
 
 #define STP_PKT_SIZE        1300
 #define STP_MAX_DESC_SIZE   1000
-#define STP_MAX_DEPS        (STP_PKT_SIZE - 16) / 8
+#define STP_MAX_DEPS        (STP_PKT_SIZE - 8) / 8
+#define STP_MAX_PART_SIZE   (STP_PKT_SIZE - 8)
 
 #define DEFAULT_IP "asqel.ddns.net:42024"
 
@@ -211,6 +212,66 @@ int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) { // returns num
     return num_deps;
 }
 
+int download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
+    uint8_t buf[STP_PKT_SIZE];
+    uint64_t r = READ_PART;
+
+    int64_t offset = 0;
+
+    // open the local file for writing
+    FILE *f = fopen(dest_path, "wb");
+    if (!f) {
+        fprintf(stderr, "failed to open local file for writing\n");
+        return -1;
+    }
+
+    while (offset < file_size) {
+        uint64_t xid = get_random_xid();
+
+        int part_size = (int) (file_size - offset);
+        if (part_size > STP_MAX_PART_SIZE)
+            part_size = STP_MAX_PART_SIZE;
+
+        memcpy(buf, &xid, 6);
+        memcpy(buf + 6, &r, 2);
+        memcpy(buf + 8, &id, 8);
+        memcpy(buf + 16, &offset, 8);
+        memcpy(buf + 24, &part_size, 2);
+
+        purge_receive_buffer();
+
+        if (send(G_FD, buf, 26, 0) == -1) {
+            fclose(f);
+            RETERR("[protocol err] send error %d\n", errno);
+        }
+
+        int rlen = recv(G_FD, buf, 1300, 0);
+
+        if (check_response(buf, rlen, xid, READ_PART_RSP))
+            return -1;
+
+        if (rlen < 8 + part_size) {
+            fclose(f);
+            RETERR("[protocol err] recv too short\n");
+        }
+
+        size_t written = fwrite(buf + 8, 1, part_size, f);
+        if (written != (size_t) part_size) {
+            fclose(f);
+            RETERR("failed to write to local file\n");
+        }
+
+        offset += part_size;
+
+        printf("downloaded %"PRId64"/%"PRId64" bytes\r", offset, file_size);
+        fflush(stdout);
+    }
+
+    printf("\n");
+    fclose(f);
+    return 0;   
+}
+
 /*******************************************
  *                                        *
  *           COMMAND LINE STUFF           *
@@ -320,9 +381,12 @@ int main(int argc, char **argv) {
     if (num_deps == -1)
         return 1;
 
-    for (int i = 0; i < num_deps; i++) {
+    for (int i = 0; i < num_deps; i++) 
         printf("dep %d: %"PRId64"\n", i, deps[i]);
-    }
+    
+
+    if (download_pkg(id, "tcc.txt", file_size))
+        return 1;
 
     close(fd);
     return 0;
