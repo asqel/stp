@@ -47,9 +47,17 @@ def respond(request: packet_t) -> None:
 	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
 
 	if (request._type == GET_ID):
-		package_id = package.find_id(request.data);
-		res._type = GET_ID_RSP;
-		res.append(package_id.to_bytes(8, "little"));
+		if len(request.data) != 64:
+			res._type = ERR_UNKNOWN_REQUEST;
+		else:
+			zero_idx = request.data.find(b'\x00');
+			name = request.data;
+			if zero_idx != -1:
+				name = request.data[:zero_idx];
+				
+			package_id = package.find_id(name);
+			res._type = GET_ID_RSP;
+			res.append(package_id.to_bytes(8, "little"));
 
 	elif (request._type == GET_INFO):
 		if (len(request.data) != 8):
