@@ -3,7 +3,7 @@ import packet as pck
 import os
 import shutil
 
-packages: dict[str, list[str, str, int, list[int]]] = {}; # name: [desc, path, id, [dependencies]]
+packages: dict[str, list[str, str, int, list[int], int]] = {}; # name: [desc, path, id, [dependencies], version]
 id_to_name: dict[int, str] = {}
 
 def init_packages() -> None:
@@ -39,16 +39,27 @@ def send_info(packet: pck.packet_t, id: int) -> None:
 			packet._type = pck.ERR_INV_ID
 			return ;
 
-		size = os.path.getsize(packages[p_name][1]);
+		name = p_name.encode("utf8");
+		if (len(name) > 64):
+			name = name[:64];
+		name += b'\x00' * (64 - len(name));
+
+		size = os.path.getsize(packages[p_name][1]).to_bytes(8, "little");
+		version = packages[p_name][4].to_bytes(4, "little");
+
 		desc = packages[p_name][0].encode("utf-8");
-		packet._type = pck.GET_INFO_RSP;
-		packet.append(size.to_bytes(8, "little"));
 		if (len(desc) > 1000):
 			desc = desc[:1000]
+
+		packet.append(name);
+		packet.append(size);
+		packet.append(version);
 		packet.append(desc);
+		packet._type = pck.GET_INFO_RSP;
 		return ;
 
 	except Exception as e:
+		print(e, type(e));
 		packet._type = pck.ERR_FAIL;
 		return ;
 

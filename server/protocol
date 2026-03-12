@@ -23,7 +23,9 @@ get package info:
 
 	success:
 		<- 0x04
+		<- package name (64 bytes)
 		<- package size (8 bytes)
+		<- version (4 bytes)
 		<- package info (1000 character description)
 	fail:
 		package is being updated:
