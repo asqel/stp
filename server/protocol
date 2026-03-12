@@ -12,7 +12,7 @@ packet:
 
 get package id:
 	-> 0x01
-	-> package name (end of the packet)
+	-> package name (64 bytes) (add zeroes to finish early)
 
 	<- 0x02
 	<- package id (8 bytes, == 0 if notfound)
