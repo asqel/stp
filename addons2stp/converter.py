@@ -1,7 +1,7 @@
 import urllib.request as urlreq
 import os, sys, json
 
-SHOW_CMD = True
+SHOW_CMD = False
 
 path = os.path.dirname(os.path.abspath(__file__))
 
@@ -58,6 +58,7 @@ exec(f"rm -rf {os.path.join(path, 'output')} {os.path.join(path, 'tmp')}")
 exec(f"mkdir {os.path.join(path, 'output')}")
 
 for i, addon in enumerate(ADDONS):
+    print(f"{i+1}/{len(ADDONS)}: {addon['name']}")
     output_dict[addon["name"]] = [
         addon["description"],
         f"{addon['name']}.zip",
@@ -69,6 +70,7 @@ for i, addon in enumerate(ADDONS):
     exec(f"mkdir {os.path.join(path, 'tmp')}")
 
     for file in addon["files"]:
+        print(f"  {file}")
         f = get_file_from_name(file)
 
         if not ("is_targz" in f and f["is_targz"]):
@@ -94,9 +96,6 @@ for i, addon in enumerate(ADDONS):
 
     exec(f"cd {os.path.join(path, 'tmp')} && zip -rq {os.path.join(path, 'output', addon['name'] + '.zip')} ./*")
     exec(f"rm -rf {os.path.join(path, 'tmp')}")
-
-    if i == 3:
-        break
 
 with open(os.path.join(path, "output.json"), "w") as f:
     json.dump(output_dict, f, indent=4)
