@@ -2,6 +2,7 @@ import json
 import packet as pck
 import os
 import shutil
+import hashlib
 
 packages: dict[str, list[str, str, int, list[int], int]] = {}; # name: [desc, path, id, [dependencies], version]
 id_to_name: dict[int, str] = {}
@@ -46,6 +47,16 @@ def send_info(packet: pck.packet_t, id: int) -> None:
 
 		size = os.path.getsize(packages[p_name][1]).to_bytes(8, "little");
 		version = packages[p_name][4].to_bytes(4, "little");
+		
+		md5sum = b'';
+		with open(packages[p_name][1], "rb") as f:
+			md5 = hashlib.md5()
+			while True:
+				chunk = f.read(8192)
+				if not chunk:
+					break
+				md5.update(chunk)
+			md5sum = md5.digest();
 
 		desc = packages[p_name][0].encode("utf-8");
 		if (len(desc) > 1000):
@@ -54,6 +65,7 @@ def send_info(packet: pck.packet_t, id: int) -> None:
 		packet.append(name);
 		packet.append(size);
 		packet.append(version);
+		packet.append(md5sum);
 		packet.append(desc);
 		packet._type = pck.GET_INFO_RSP;
 		return ;

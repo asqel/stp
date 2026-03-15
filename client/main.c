@@ -10,6 +10,10 @@
 #include <stdio.h>
 #include <poll.h>
 
+#if defined(__profanOS__)
+#include <profan/md5.h>
+#endif
+
 // client setings (editable)
 #define DEFAULT_IP "asqel.ddns.net:42024"
 #define RECV_TIMEOUT_MS 1000  // stop waiting for a server response after this delay
@@ -45,6 +49,14 @@
 #define R64_TO_XID(r) ((r) & 0xFFFFFFFFFF)
 #define R64_TO_TYPE(r) (((r) >> 48) & 0xFFFF)
 #define TYPE_IS_ERR(t) (((t) & 0xFF00) == 0xFF00)
+
+typedef struct {
+    char name[STP_MAX_NAME_SIZE];
+    uint64_t file_size;
+    uint32_t version;
+    uint8_t md5[16];
+    char desc[STP_MAX_DESC_SIZE];
+} stp_info_t;
 
 int G_FD;
 
@@ -195,8 +207,8 @@ int64_t get_pkg_id(const char *name) {
     return r;
 }
 
-int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) {
-    // returns file size
+int64_t get_pkg_info(int64_t id, stp_info_t *info_buf) {
+    // returns 0 on success, -1 on error
 
     uint8_t buf[STP_PKT_SIZE];
     memcpy(buf + 8, &id, 8);
@@ -205,20 +217,23 @@ int64_t get_pkg_info(int64_t id, char *info_buf, size_t buf_size) {
     if (rlen < 0)
         return -1;
 
-    if (rlen < 16)
+    if (rlen < STP_MAX_NAME_SIZE + 20) // 20 = 8 (id) + 8 (file_size) + 4 (version) + 16 (md5)
         RETERR("[protocol err] recv too short\n");
 
-    uint64_t file_size;
-    memcpy(&file_size, buf + 8, 8);
+    memcpy(info_buf->name, buf + 8, STP_MAX_NAME_SIZE);
+    memcpy(&info_buf->file_size, buf + 8 + STP_MAX_NAME_SIZE, 8);
+    memcpy(&info_buf->version, buf + 16 + STP_MAX_NAME_SIZE, 4);
+    memcpy(info_buf->md5, buf + 20 + STP_MAX_NAME_SIZE, 16);
 
-    int max_copy_size = rlen - 16;
-    if (max_copy_size > (int) buf_size - 1) // -1 for the null terminator
-        max_copy_size = (int) buf_size - 1;
+    int desc_len = rlen - (STP_MAX_NAME_SIZE + 36);
+    if (desc_len > STP_MAX_DESC_SIZE - 1)
+        desc_len = STP_MAX_DESC_SIZE - 1;
 
-    memcpy(info_buf, buf + 16, max_copy_size);
-    info_buf[max_copy_size] = '\0';
+    memcpy(info_buf->desc, buf + 36 + STP_MAX_NAME_SIZE, desc_len);
 
-    return file_size;
+    info_buf->desc[desc_len] = '\0';
+
+    return 0;
 }
 
 int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
@@ -245,7 +260,13 @@ int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
     return num_deps;
 }
 
-static int fast_download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_size) {
+/*******************************************
+ *                                        *
+ *   STP CLIENT SIDE DOWNLOAD FUNCTIONS   *
+ *                                        *
+********************************************/
+
+static int download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_size) {
     uint8_t buf[STP_PKT_SIZE];
     uint64_t r = READ_PART;
 
@@ -265,13 +286,43 @@ static int fast_download_send(uint64_t xid, int64_t id, int64_t offset, int64_t 
     return 0;
 }
 
-int fast_download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
+#if defined(__profanOS__)
+static int download_check_md5(FILE *f, uint8_t *expected_md5) {
+    // returns 0 if md5 matches, -1 if not
+    uint8_t result[16];
+
+    fseek(f, 0, SEEK_SET);
+
+    if (md5_stream(f, result) == -1)
+        RETERR("failed to compute md5\n");
+
+    return memcmp(result, expected_md5, 16) ? -1 : 0;
+    // use the md5sum command
+    
+}
+#else
+static int download_check_md5(const char *file, uint8_t *expected_md5) {
+    char cmd[512];
+    strcpy(cmd, "echo \"");
+
+    for (int i = 0; i < 16; i++)
+        sprintf(cmd + 6 + i * 2, "%02x", expected_md5[i]);
+    
+    strcat(cmd, "  ");
+    strcat(cmd, file);
+    strcat(cmd, "\" | md5sum -c - >/dev/null 2>&1");
+    
+    return system(cmd) == 0 ? 0 : -1;
+}
+#endif
+
+int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *expected_md5) {
     uint8_t buf[STP_PKT_SIZE];
     int64_t received_bytes = 0, offset = 0;
 
     if (FAST_DL_ONCE > 255)
         RETERR("FAST_DL_ONCE must be < 256\n");
- 
+
     // open the local file for writing
     FILE *f = fopen(dest_path, "wb");
     if (!f)
@@ -282,7 +333,7 @@ int fast_download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
     while (offset < file_size) {
         int64_t part_offset = offset;
         int to_wait;
-    
+
         memset(received_parts, 0, sizeof(received_parts));
 
         // we use the last bytes of the XID to identify the part in the response
@@ -296,7 +347,7 @@ int fast_download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
 
         // send requests for the parts
         for (int i = 0; i < FAST_DL_ONCE && offset < file_size; i++) {
-            if (!received_parts[i] && fast_download_send(xid + i, id, offset, file_size))
+            if (!received_parts[i] && download_send(xid + i, id, offset, file_size))
                 goto error;
 
             offset += STP_MAX_PART_SIZE;
@@ -360,6 +411,20 @@ int fast_download_pkg(int64_t id, const char *dest_path, int64_t file_size) {
             to_wait--;
         }
     }
+    printf("\n");
+
+    if (received_bytes != file_size)
+        GOTOERR(error, "download incomplete: received %"PRId64" bytes, expected %"PRId64"\n",
+                    received_bytes, file_size);
+
+    #ifdef __profanOS__
+    if (expected_md5 && download_check_md5(f, expected_md5))
+        GOTOERR(error, "md5 checksum mismatch\n");
+    #else
+    fflush(f); // write before checking sum
+    if (expected_md5 && download_check_md5(dest_path, expected_md5))
+        GOTOERR(error, "md5 checksum mismatch\n");
+    #endif
 
     fclose(f);
     return 0;
@@ -461,29 +526,34 @@ int main(int argc, char **argv) {
     if (id == -1)
         return 1;
 
-    char info_buf[STP_MAX_DESC_SIZE + 1];
-    int64_t file_size = get_pkg_info(id, info_buf, sizeof(info_buf));
+    stp_info_t *struct_info = malloc(sizeof(stp_info_t));
 
-    printf("file size = %"PRId64"\n", file_size);
-
-    if (file_size == -1)
+    if (get_pkg_info(id, struct_info) == -1)
         return 1;
 
-    printf("info = %s\n", info_buf);
+    printf("PACKAGE INFO:\n");
+    printf("  name      %s\n", struct_info->name);
+    printf("  file_size %"PRId64"\n", struct_info->file_size);
+    printf("  version   %u\n", struct_info->version);
+    printf("  md5       %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+        struct_info->md5[0], struct_info->md5[1], struct_info->md5[2], struct_info->md5[3],
+        struct_info->md5[4], struct_info->md5[5], struct_info->md5[6], struct_info->md5[7],
+        struct_info->md5[8], struct_info->md5[9], struct_info->md5[10], struct_info->md5[11],
+        struct_info->md5[12], struct_info->md5[13], struct_info->md5[14], struct_info->md5[15]);
+    printf("  desc      %s\n", struct_info->desc);
 
     int64_t deps[STP_MAX_DEPS];
     int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
 
-    printf("num_deps = %d\n", num_deps);
+    printf("DEPENDENCIES (%d):\n", num_deps);
 
     if (num_deps == -1)
         return 1;
 
     for (int i = 0; i < num_deps; i++)
-        printf("dep %d: %"PRId64"\n", i, deps[i]);
+        printf("  dep %d: %"PRId64"\n", i, deps[i]);
 
-
-    if (fast_download_pkg(id, "tcc.txt", file_size))
+    if (download_pkg(id, "tcc.txt", struct_info->file_size, struct_info->md5))
         return 1;
 
     close(fd);
