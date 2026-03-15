@@ -1,3 +1,4 @@
+```
 MAX PACK SIZE = 1300 (id, type and data included)
 
 every number shall be transfered in little endiannes
@@ -65,3 +66,4 @@ get package dependencies:
 		
 
 type 0xFFFF: unknown request
+```
