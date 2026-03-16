@@ -1,3 +1,16 @@
+/*****************************************************************************\
+|   === stp.c : 2026 ===                                                      |
+|                                                                             |
+|    profanOS package manager based on STP protocol                .pi0iq.    |
+|                                                                 d"  . `'b   |
+|    This file is part of profanOS and is released under          q. /|\  "   |
+|    the terms of the GNU General Public License                   `// \\     |
+|                                                                  //   \\    |
+|   === elydre : https://github.com/elydre/profanOS ===         #######  \\   |
+\*****************************************************************************/
+
+// @LINK: libpf
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -67,24 +80,24 @@ int G_FD;
 ********************************************/
 
 char *error_to_str(uint16_t error) {
-	if (error >> 8 != 0xFF)
-		return "Success";
-	switch (error) {
-		case ERR_UNKNOWN_REQUEST:
-			return "Invalid request";
-		case ERR_UPDATING:
-			return "Package is being updated";
-		case ERR_INV_ID:
-			return "Invalide package id";
-		case ERR_OUT_RANGE:
-			return "Offset out of range";
-		case ERR_TOO_LONG:
-			return "Package part too long";
-		case ERR_FAIL:
-			return "Internal server failure";
-		default:
-			return "Unknown error";
-	}
+    if (error >> 8 != 0xFF)
+        return "Success";
+    switch (error) {
+        case ERR_UNKNOWN_REQUEST:
+            return "Invalid request";
+        case ERR_UPDATING:
+            return "Package is being updated";
+        case ERR_INV_ID:
+            return "Invalide package id";
+        case ERR_OUT_RANGE:
+            return "Offset out of range";
+        case ERR_TOO_LONG:
+            return "Package part too long";
+        case ERR_FAIL:
+            return "Internal server failure";
+        default:
+            return "Unknown error";
+    }
 }
 
 /*******************************************
@@ -286,35 +299,38 @@ static int download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_
     return 0;
 }
 
-#if defined(__profanOS__)
-static int download_check_md5(FILE *f, uint8_t *expected_md5) {
-    // returns 0 if md5 matches, -1 if not
-    uint8_t result[16];
-
-    fseek(f, 0, SEEK_SET);
-
-    if (md5_stream(f, result) == -1)
-        RETERR("failed to compute md5\n");
-
-    return memcmp(result, expected_md5, 16) ? -1 : 0;
-    // use the md5sum command
-    
-}
-#else
 static int download_check_md5(const char *file, uint8_t *expected_md5) {
-    char cmd[512];
-    strcpy(cmd, "echo \"");
+    #if defined(__profanOS__)
+        // returns 0 if md5 matches, -1 if not
+        uint8_t result[16];
 
-    for (int i = 0; i < 16; i++)
-        sprintf(cmd + 6 + i * 2, "%02x", expected_md5[i]);
-    
-    strcat(cmd, "  ");
-    strcat(cmd, file);
-    strcat(cmd, "\" | md5sum -c - >/dev/null 2>&1");
-    
-    return system(cmd) == 0 ? 0 : -1;
+        FILE *f = fopen(file, "rb");
+
+        if (!f)
+            RETERR("failed to open file for md5 check\n");
+
+        if (md5_stream(f, result) == -1) {
+            fclose(f);
+            RETERR("failed to compute md5\n");
+        }
+
+        fclose(f);
+
+        return memcmp(result, expected_md5, 16) == 0 ? 0 : -1;
+    #else
+        char cmd[512];
+        strcpy(cmd, "echo \"");
+
+        for (int i = 0; i < 16; i++)
+            sprintf(cmd + 6 + i * 2, "%02x", expected_md5[i]);
+
+        strcat(cmd, "  ");
+        strcat(cmd, file);
+        strcat(cmd, "\" | md5sum -c - >/dev/null 2>&1");
+
+        return system(cmd) == 0 ? 0 : -1;
+    #endif
 }
-#endif
 
 int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *expected_md5) {
     uint8_t buf[STP_PKT_SIZE];
@@ -417,14 +433,10 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
         GOTOERR(error, "download incomplete: received %"PRId64" bytes, expected %"PRId64"\n",
                     received_bytes, file_size);
 
-    #ifdef __profanOS__
-    if (expected_md5 && download_check_md5(f, expected_md5))
-        GOTOERR(error, "md5 checksum mismatch\n");
-    #else
     fflush(f); // write before checking sum
+
     if (expected_md5 && download_check_md5(dest_path, expected_md5))
         GOTOERR(error, "md5 checksum mismatch\n");
-    #endif
 
     fclose(f);
     return 0;
@@ -514,7 +526,7 @@ int main(int argc, char **argv) {
     }
 
     if (connect(fd, (void *)&addr, sizeof(addr))) {
-        fprintf(stderr, "erreur de connection ta mere\n");
+        fprintf(stderr, "failed to connect to server: %d\n", errno);
         close(fd);
         return 1;
     }
@@ -553,7 +565,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < num_deps; i++)
         printf("  dep %d: %"PRId64"\n", i, deps[i]);
 
-    if (download_pkg(id, "tcc.txt", struct_info->file_size, struct_info->md5))
+    if (download_pkg(id, "tcc.zip", struct_info->file_size, struct_info->md5))
         return 1;
 
     close(fd);

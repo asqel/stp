@@ -2,6 +2,7 @@ import urllib.request as urlreq
 import os, sys, json
 
 SHOW_CMD = False
+OUTPUT_DIR = "output"
 
 path = os.path.dirname(os.path.abspath(__file__))
 
@@ -54,14 +55,14 @@ FILEARRAY = addons_json["FILEARRAY"]
 
 output_dict = {}
 
-exec(f"rm -rf {os.path.join(path, 'output')} {os.path.join(path, 'tmp')}")
-exec(f"mkdir {os.path.join(path, 'output')}")
+exec(f"rm -rf {os.path.join(path, OUTPUT_DIR)} {os.path.join(path, 'tmp')}")
+exec(f"mkdir {os.path.join(path, OUTPUT_DIR)}")
 
 for i, addon in enumerate(ADDONS):
     print(f"{i+1}/{len(ADDONS)}: {addon['name']}")
     output_dict[addon["name"]] = [
         addon["description"],
-        f"{addon['name']}.zip",
+        os.path.join(OUTPUT_DIR, addon['name'] + '.zip'),
         i,
         [get_addon_index(dep) for dep in addon["dependencies"]] if "dependencies" in addon else [],
         0, # TODO: version
@@ -94,7 +95,7 @@ for i, addon in enumerate(ADDONS):
         exec(f"echo \"mv {file} {profan_path}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
         exec(f"echo \"rm -rf {profan_path}\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
 
-    exec(f"cd {os.path.join(path, 'tmp')} && zip -rq {os.path.join(path, 'output', addon['name'] + '.zip')} ./*")
+    exec(f"cd {os.path.join(path, 'tmp')} && zip -rq {os.path.join(path, OUTPUT_DIR, addon['name'] + '.zip')} ./*")
     exec(f"rm -rf {os.path.join(path, 'tmp')}")
 
 with open(os.path.join(path, "output.json"), "w") as f:

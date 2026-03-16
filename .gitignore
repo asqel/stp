@@ -60,7 +60,9 @@ __pycache__/
 # client binaries
 stp_client
 
-# addons generated files
-addons2stp/output/
-addons2stp/output.json
+# generated files
 addons2stp/tmp/
+
+output/
+output.json
+*.zip
