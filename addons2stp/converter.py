@@ -63,7 +63,7 @@ for i, addon in enumerate(ADDONS):
     output_dict[addon["name"]] = [
         addon["description"],
         os.path.join(OUTPUT_DIR, addon['name'] + '.zip'),
-        i,
+        i + 1,
         [get_addon_index(dep) for dep in addon["dependencies"]] if "dependencies" in addon else [],
         0, # TODO: version
     ]

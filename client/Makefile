@@ -1,5 +1,5 @@
 all:
-	gcc -Wall -Wextra main.c -o stp_client
+	gcc -g -Wall -Wextra main.c -o stp_client
 
 clean:
 	rm -f stp_client

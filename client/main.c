@@ -154,7 +154,7 @@ static int stp_sarap(uint8_t *buf, int buf_len, uint16_t type) {
     purge_receive_buffer();
 
     if (send(G_FD, buf, buf_len, 0) == -1)
-        RETERR("[protocol err] send error %d\n", errno);
+        RETERR("[protocol err] send error %d (%s)\n", errno, strerror(errno));
 
     wait_for_response:
     int rlen = timeout_recv(buf, 1300);
@@ -169,7 +169,7 @@ static int stp_sarap(uint8_t *buf, int buf_len, uint16_t type) {
     }
 
     if (rlen < 0)
-        RETERR("[protocol err] recv error %d\n", errno);
+        RETERR("[protocol err] recv error %d (%s)\n", errno, strerror(errno));
 
     if (rlen < 8)
         RETERR("[protocol err] recv too short\n");
@@ -439,7 +439,7 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
                 GOTOERR(error, "failed to write to local file\n");
 
             received_bytes += rlen;
-            printf("downloaded %"PRId64"/%"PRId64" bytes\r", received_bytes, file_size);
+            printf("%s: downloaded %"PRId64"/%"PRId64" bytes\r", dest_path, received_bytes, file_size);
             fflush(stdout);
 
             if (dl_stat)
@@ -475,13 +475,52 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
     return -1;
 }
 
+int get_pkg_list(uint64_t **ids) {
+    stp_info_t *info_buf = malloc(sizeof(stp_info_t));
+
+    if (get_pkg_info(0, info_buf) == -1) {
+        free(info_buf);
+        return -1;
+    }
+
+    // download the list
+    if (download_pkg(0, "pkg_list.tmp", info_buf->file_size, info_buf->md5, NULL) == -1) {
+        free(info_buf);
+        return -1;
+    }
+
+    // the list is a sequence of 8-byte ids
+    int num_ids = info_buf->file_size / 8;
+    free(info_buf);
+
+    uint64_t *id_list = malloc(num_ids * 8);
+
+    FILE *f = fopen("pkg_list.tmp", "rb");
+    if (!f) {
+        free(id_list);
+        return -1;
+    }
+
+    if (fread(id_list, 8, num_ids, f) != (size_t) num_ids) {
+        free(id_list);
+        fclose(f);
+        return -1;
+    }
+
+    fclose(f);
+    remove("pkg_list.tmp");
+
+    *ids = id_list;
+    return num_ids;
+}
+
 /*******************************************
  *                                        *
  *           COMMAND LINE STUFF           *
  *                                        *
 ********************************************/
 
-int parse_ipandport(char *exe, const char *str, struct sockaddr_in *addr) {
+int parse_ipandport(const char *str, struct sockaddr_in *addr) {
     // truc.ddns.net:1234 or 127.0.0.1:1234
 
     char ip[256];
@@ -489,13 +528,13 @@ int parse_ipandport(char *exe, const char *str, struct sockaddr_in *addr) {
 
     const char *p = strchr(str, ':');
     if (!p) {
-        fprintf(stderr, "%s: expected ip:port format\n", exe);
+        fprintf(stderr, "stp: expected ip:port format\n");
         return -1;
     }
 
     size_t ip_len = p - str;
     if (ip_len >= sizeof(ip)) {
-        fprintf(stderr, "%s: ip too long\n", exe);
+        fprintf(stderr, "stp: ip too long\n");
         return -1;
     }
 
@@ -504,13 +543,13 @@ int parse_ipandport(char *exe, const char *str, struct sockaddr_in *addr) {
 
     port = atoi(p + 1);
     if (port <= 0 || port > 65535) {
-        fprintf(stderr, "%s: '%s' invalid port\n", exe, p + 1);
+        fprintf(stderr, "stp: '%s' invalid port\n", p + 1);
         return -1;
     }
 
     struct hostent *info = gethostbyname(ip);
     if (!info) {
-        fprintf(stderr, "%s: %s: host non trouve\n", exe, str);
+        fprintf(stderr, "stp: %s: host non trouve\n", str);
         return -1;
     }
 
@@ -526,6 +565,52 @@ int parse_ipandport(char *exe, const char *str, struct sockaddr_in *addr) {
         port
     );
 
+    return 0;
+}
+
+int setup_connection(void) {
+    struct sockaddr_in addr;
+
+    if (parse_ipandport(DEFAULT_IP, &addr))
+        return 1;
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    G_FD = fd;
+
+    if (fd < 0) {
+        return 1;
+    }
+
+    if (connect(fd, (void *)&addr, sizeof(addr))) {
+        fprintf(stderr, "failed to connect to server: %d\n", errno);
+        close(fd);
+        return 1;
+    }
+
+    return 0;
+}
+
+int cmd_list(void) {
+    uint64_t *ids;
+    int num_ids = get_pkg_list(&ids);
+
+    if (num_ids < 0)
+        return 1;
+
+    printf("available packages:\n");
+
+    for (int i = 0; i < num_ids; i++) {
+        stp_info_t info;
+
+        if (get_pkg_info(ids[i], &info) == -1) {
+            free(ids);
+            return 1;
+        }
+
+        printf("  %s: %s\n", info.name, info.desc);
+    }
+
+    free(ids);
     return 0;
 }
 
@@ -556,18 +641,23 @@ command_t parse_args(int argc, char **argv) {
     if (argc < 2)
         return CMD_HELP;
 
+    if (argc > 3) {
+        fprintf(stderr, "usage: %s <command> [name]\n", argv[0]);
+        return 1;
+    }
+
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
         for (size_t j = 0; commands[i].str[j]; j++) {
-            if (strcmp(argv[1], commands[i].str[j]) == 0) {
-                if (commands[i].needs_arg && argc < 3) {
-                    fprintf(stderr, "command '%s' needs an argument\n", argv[1]);
-                    return CMD_ERROR;
-                } else if (!commands[i].needs_arg && argc > 2) {
-                    fprintf(stderr, "command '%s' does not take arguments\n", argv[1]);
-                    return CMD_ERROR;
-                }
-                return commands[i].cmd;
+            if (strcmp(argv[1], commands[i].str[j]))
+                continue;
+            if (commands[i].needs_arg && argc < 3) {
+                fprintf(stderr, "command '%s' needs an argument\n", argv[1]);
+                return CMD_ERROR;
+            } else if (!commands[i].needs_arg && argc > 2) {
+                fprintf(stderr, "command '%s' does not take arguments\n", argv[1]);
+                return CMD_ERROR;
             }
+            return commands[i].cmd;
         }
     }
 
@@ -576,40 +666,38 @@ command_t parse_args(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
-    struct sockaddr_in addr;
-    char *ip_str;
+    command_t command = parse_args(argc, argv);
 
-    if (argc > 2) {
-        fprintf(stderr, "usage: %s ip:port\n", argv[0]);
+    if (command == CMD_ERROR)
+        return 1;
+
+    if (command == CMD_HELP) {
+        printf("please ask to pf4 for help :)\n");
+        return 0;
+    }
+
+    if (setup_connection())
+        return 1;
+
+    if (command == CMD_LIST) {
+        int r = cmd_list();
+        close(G_FD);
+        return r;
+    }
+
+    if (command != CMD_INSTALL) {
+        fprintf(stderr, "only 'install' command is implemented for now\n");
+        close(G_FD);
         return 1;
     }
 
-    if (argc == 2)
-        ip_str = argv[1];
-    else
-        ip_str = DEFAULT_IP;
+    printf("asking for '%s' id...\n", argv[2]);
 
-    if (parse_ipandport(argv[0], ip_str, &addr))
-        return 1;
-
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    G_FD = fd;
-
-    if (fd < 0) {
-        return 1;
-    }
-
-    if (connect(fd, (void *)&addr, sizeof(addr))) {
-        fprintf(stderr, "failed to connect to server: %d\n", errno);
-        close(fd);
-        return 1;
-    }
-
-    int64_t id = get_pkg_id("tcc");
+    int64_t id = get_pkg_id(argv[2]);
 
     printf("id = %"PRId64"\n", id);
 
-    if (id == -1)
+    if (id == -1 || id == 0) 
         return 1;
 
     stp_info_t *struct_info = malloc(sizeof(stp_info_t));
@@ -641,12 +729,16 @@ int main(int argc, char **argv) {
 
     download_stat_t dl_stat;
 
-    if (download_pkg(id, "tcc.zip", struct_info->file_size, struct_info->md5, &dl_stat) == -1)
+    char dl_path[256];
+    snprintf(dl_path, sizeof(dl_path), "%s.zip", struct_info->name);
+
+    if (download_pkg(id, dl_path, struct_info->file_size, struct_info->md5, &dl_stat) == -1)
         return 1;
 
     printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost\n",
                 dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost);
 
-    close(fd);
+    free(struct_info);
+    close(G_FD);
     return 0;
 }
