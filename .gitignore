@@ -64,5 +64,5 @@ stp_client
 addons2stp/tmp/
 
 output/
-output.json
+*.json
 *.zip
