@@ -66,3 +66,4 @@ addons2stp/tmp/
 output/
 *.json
 *.zip
+server/list.bin
