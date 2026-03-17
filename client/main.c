@@ -614,6 +614,61 @@ int cmd_list(void) {
     return 0;
 }
 
+int cmd_install(uint64_t usrid, const char *name) {
+    int64_t id = usrid;
+
+    if (id == 0)
+        id = get_pkg_id(name);
+
+    if (id == -1)
+        return 1;
+
+    if (id == 0) {
+        fprintf(stderr, "package '%s' not found\n", name);
+        return 1;
+    }
+
+    stp_info_t info;
+
+    if (get_pkg_info(id, &info) == -1)
+        return 1;
+
+    printf("PACKAGE INFO:\n");
+    printf("  name      %s\n", info.name);
+    printf("  file_size %"PRId64"\n", info.file_size);
+    printf("  version   %u\n", info.version);
+    printf("  md5       %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+        info.md5[0], info.md5[1], info.md5[2], info.md5[3],
+        info.md5[4], info.md5[5], info.md5[6], info.md5[7],
+        info.md5[8], info.md5[9], info.md5[10], info.md5[11],
+        info.md5[12], info.md5[13], info.md5[14], info.md5[15]);
+    printf("  desc      %s\n", info.desc);
+
+    int64_t deps[STP_MAX_DEPS];
+    int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
+    if (num_deps == -1)
+        return 1;
+    
+    printf("DEPENDENCIES (%d):\n", num_deps);
+    for (int i = 0; i < num_deps; i++) {
+        cmd_install(deps[i], NULL);
+        printf("  dep %d: %"PRId64"\n", i, deps[i]);
+    }
+
+    download_stat_t dl_stat;
+
+    char dl_path[256];
+    snprintf(dl_path, sizeof(dl_path), "%s.zip", info.name);
+
+    if (download_pkg(id, dl_path, info.file_size, info.md5, &dl_stat) == -1)
+        return 1;
+
+    printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost\n",
+                dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost);
+    
+    return 0;
+}
+
 typedef enum {
     CMD_ERROR = -1,
     CMD_INSTALL,
@@ -679,66 +734,21 @@ int main(int argc, char **argv) {
     if (setup_connection())
         return 1;
 
-    if (command == CMD_LIST) {
-        int r = cmd_list();
-        close(G_FD);
-        return r;
+    int ret;
+
+    switch (command) {
+        case CMD_LIST:
+            ret = cmd_list();
+            break;
+        case CMD_INSTALL:
+            ret = cmd_install(0, argv[2]);
+            break;
+        default:
+            fprintf(stderr, "command not implemented yet\n");
+            ret = 1;
+            break;
     }
-
-    if (command != CMD_INSTALL) {
-        fprintf(stderr, "only 'install' command is implemented for now\n");
-        close(G_FD);
-        return 1;
-    }
-
-    printf("asking for '%s' id...\n", argv[2]);
-
-    int64_t id = get_pkg_id(argv[2]);
-
-    printf("id = %"PRId64"\n", id);
-
-    if (id == -1 || id == 0) 
-        return 1;
-
-    stp_info_t *struct_info = malloc(sizeof(stp_info_t));
-
-    if (get_pkg_info(id, struct_info) == -1)
-        return 1;
-
-    printf("PACKAGE INFO:\n");
-    printf("  name      %s\n", struct_info->name);
-    printf("  file_size %"PRId64"\n", struct_info->file_size);
-    printf("  version   %u\n", struct_info->version);
-    printf("  md5       %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-        struct_info->md5[0], struct_info->md5[1], struct_info->md5[2], struct_info->md5[3],
-        struct_info->md5[4], struct_info->md5[5], struct_info->md5[6], struct_info->md5[7],
-        struct_info->md5[8], struct_info->md5[9], struct_info->md5[10], struct_info->md5[11],
-        struct_info->md5[12], struct_info->md5[13], struct_info->md5[14], struct_info->md5[15]);
-    printf("  desc      %s\n", struct_info->desc);
-
-    int64_t deps[STP_MAX_DEPS];
-    int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
-
-    printf("DEPENDENCIES (%d):\n", num_deps);
-
-    if (num_deps == -1)
-        return 1;
-
-    for (int i = 0; i < num_deps; i++)
-        printf("  dep %d: %"PRId64"\n", i, deps[i]);
-
-    download_stat_t dl_stat;
-
-    char dl_path[256];
-    snprintf(dl_path, sizeof(dl_path), "%s.zip", struct_info->name);
-
-    if (download_pkg(id, dl_path, struct_info->file_size, struct_info->md5, &dl_stat) == -1)
-        return 1;
-
-    printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost\n",
-                dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost);
-
-    free(struct_info);
+    
     close(G_FD);
-    return 0;
+    return ret;
 }

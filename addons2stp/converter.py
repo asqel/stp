@@ -64,7 +64,7 @@ for i, addon in enumerate(ADDONS):
         addon["description"],
         os.path.join(OUTPUT_DIR, addon['name'] + '.zip'),
         i + 1,
-        [get_addon_index(dep) for dep in addon["dependencies"]] if "dependencies" in addon else [],
+        [get_addon_index(dep) + 1 for dep in addon["dependencies"]] if "dependencies" in addon else [],
         0, # TODO: version
     ]
 
