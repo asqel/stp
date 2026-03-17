@@ -18,6 +18,10 @@ def init_packages() -> None:
 			max_len = pck.MAX_PACKET_SIZE - 6 - 2;
 			max_len = max_len // 8;
 			k[3] = k[3][:max_len];
+	with open("./list.bin", "wb") as f:
+		for i in packages.values():
+			f.write(i[2].to_bytes(8, "little"));
+	packages["_"] = ["packages id list of the server", "./list.bin", 0, [], 0];
 
 def exit_packages() -> None:
 	with open("./packages.json.new", "w") as f:
