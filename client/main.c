@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <string.h>
@@ -25,6 +26,10 @@
 
 #if defined(__profanOS__)
 #include <profan/md5.h>
+#endif
+
+#if defined(__linux__)
+#include <sys/ioctl.h> // terminal size for progress bar
 #endif
 
 // client setings (editable)
@@ -71,6 +76,14 @@ typedef struct {
     char desc[STP_MAX_DESC_SIZE];
 } stp_info_t;
 
+typedef struct {
+    uint32_t packets_lost;
+    uint32_t packets_recv;
+    uint32_t total_ms;
+} download_stat_t;
+
+int G_TERMINAL_WIDTH = 80;
+int G_DOWNLOAD_MUTE = 0;
 int G_FD;
 
 /*******************************************
@@ -332,13 +345,21 @@ static int download_check_md5(const char *file, uint8_t *expected_md5) {
     #endif
 }
 
-typedef struct {
-    uint32_t packets_lost;
-    uint32_t packets_recv;
-    uint32_t total_ms;
-} download_stat_t;
-
-#include <sys/time.h>
+static void download_print_progress(int64_t received, int64_t total) {
+    int bar_width = G_TERMINAL_WIDTH - 30;
+    int progress = (int) ((received * bar_width) / total);
+    printf("\r[");
+    for (int i = 0; i < bar_width; i++) {
+        if (i < progress)
+            printf("=");
+        else if (i == progress)
+            printf(">");
+        else
+            printf(" ");
+    }
+    printf("] %6.2f%%", (double) received * 100 / total);
+    fflush(stdout);
+}
 
 int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *expected_md5, download_stat_t *dl_stat) {
     uint8_t buf[STP_PKT_SIZE];
@@ -439,8 +460,8 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
                 GOTOERR(error, "failed to write to local file\n");
 
             received_bytes += rlen;
-            printf("%s: downloaded %"PRId64"/%"PRId64" bytes\r", dest_path, received_bytes, file_size);
-            fflush(stdout);
+            if (!G_DOWNLOAD_MUTE)
+                download_print_progress(received_bytes, file_size);
 
             if (dl_stat)
                 dl_stat->packets_recv++;
@@ -516,7 +537,7 @@ int get_pkg_list(uint64_t **ids) {
 
 /*******************************************
  *                                        *
- *           COMMAND LINE STUFF           *
+ *      UDP INITIALIZATION FUNCTIONS      *
  *                                        *
 ********************************************/
 
@@ -590,6 +611,24 @@ int setup_connection(void) {
     return 0;
 }
 
+int setup(void) {
+    #if defined(__linux__)
+        struct winsize w;
+        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+        G_TERMINAL_WIDTH = w.ws_col;
+    #else
+        G_TERMINAL_WIDTH = 80; // default width for progress bars
+    #endif
+
+    return setup_connection();
+}
+
+/*******************************************
+ *                                        *
+ *       SUBCOMMANDS IMPLEMENTATION       *
+ *                                        *
+********************************************/
+
 int cmd_list(void) {
     uint64_t *ids;
     int num_ids = get_pkg_list(&ids);
@@ -633,27 +672,24 @@ int cmd_install(uint64_t usrid, const char *name) {
     if (get_pkg_info(id, &info) == -1)
         return 1;
 
-    printf("PACKAGE INFO:\n");
-    printf("  name      %s\n", info.name);
-    printf("  file_size %"PRId64"\n", info.file_size);
-    printf("  version   %u\n", info.version);
-    printf("  md5       %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-        info.md5[0], info.md5[1], info.md5[2], info.md5[3],
-        info.md5[4], info.md5[5], info.md5[6], info.md5[7],
-        info.md5[8], info.md5[9], info.md5[10], info.md5[11],
-        info.md5[12], info.md5[13], info.md5[14], info.md5[15]);
-    printf("  desc      %s\n", info.desc);
-
     int64_t deps[STP_MAX_DEPS];
     int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
     if (num_deps == -1)
         return 1;
-    
-    printf("DEPENDENCIES (%d):\n", num_deps);
-    for (int i = 0; i < num_deps; i++) {
-        cmd_install(deps[i], NULL);
-        printf("  dep %d: %"PRId64"\n", i, deps[i]);
+
+    if (num_deps > 0) {
+        for (int i = 0; i < num_deps; i++) {
+            printf("get package %"PRId64", dependency of %s\n", deps[i], info.name);
+            cmd_install(deps[i], NULL);
+        }
     }
+
+    printf("PACKAGE INFO:\n");
+    printf("  id        %"PRId64"\n", id);
+    printf("  name      %s\n", info.name);
+    printf("  desc      %s\n", info.desc);
+    printf("  file_size %"PRId64"\n", info.file_size);
+    printf("  version   %u\n", info.version);
 
     download_stat_t dl_stat;
 
@@ -663,11 +699,18 @@ int cmd_install(uint64_t usrid, const char *name) {
     if (download_pkg(id, dl_path, info.file_size, info.md5, &dl_stat) == -1)
         return 1;
 
-    printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost\n",
-                dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost);
-    
+    printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
+                dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost,
+                (double) info.file_size / (1024 * 1024) / (dl_stat.total_ms / 1000.0));
+
     return 0;
 }
+
+/*******************************************
+ *                                        *
+ *           COMMAND LINE STUFF           *
+ *                                        *
+********************************************/
 
 typedef enum {
     CMD_ERROR = -1,
@@ -731,7 +774,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (setup_connection())
+    if (setup())
         return 1;
 
     int ret;
@@ -748,7 +791,7 @@ int main(int argc, char **argv) {
             ret = 1;
             break;
     }
-    
+
     close(G_FD);
     return ret;
 }
