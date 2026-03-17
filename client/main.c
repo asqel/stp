@@ -31,7 +31,7 @@
 #define DEFAULT_IP "asqel.ddns.net:42024"
 #define RECV_TIMEOUT_MS 1000  // stop waiting for a server response after this delay
 #define MAX_RETRY_COUNT 4     // give up after this many retries (after a timeout)
-#define FAST_DL_ONCE    16    // ask for 16 parts at once in download_pkg_fast
+#define FAST_DL_ONCE    16    // ask for 16 parts at once in download_pkg
 
 // protocol types
 #define GET_ID          0x01
@@ -332,7 +332,15 @@ static int download_check_md5(const char *file, uint8_t *expected_md5) {
     #endif
 }
 
-int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *expected_md5) {
+typedef struct {
+    uint32_t packets_lost;
+    uint32_t packets_recv;
+    uint32_t total_ms;
+} download_stat_t;
+
+#include <sys/time.h>
+
+int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *expected_md5, download_stat_t *dl_stat) {
     uint8_t buf[STP_PKT_SIZE];
     int64_t received_bytes = 0, offset = 0;
 
@@ -345,6 +353,15 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
         RETERR("failed to open local file for writing\n");
 
     char received_parts[FAST_DL_ONCE]; // bitmap to track received parts
+
+    uint32_t start_time = 0;
+
+    if (dl_stat) {
+        memset(dl_stat, 0, sizeof(download_stat_t));
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        start_time = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+    }
 
     while (offset < file_size) {
         int64_t part_offset = offset;
@@ -376,6 +393,8 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
                 if (retry_count >= MAX_RETRY_COUNT)
                     GOTOERR(error, "[protocol err] recv timeout, max retry count reached\n");
                 retry_count++;
+                if (dl_stat)
+                    dl_stat->packets_lost += to_wait;
                 offset = part_offset; // reset offset to resend the same parts
                 goto send_and_wait;
             }
@@ -423,6 +442,9 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
             printf("downloaded %"PRId64"/%"PRId64" bytes\r", received_bytes, file_size);
             fflush(stdout);
 
+            if (dl_stat)
+                dl_stat->packets_recv++;
+
             received_parts[part_index] = 1;
             to_wait--;
         }
@@ -437,6 +459,12 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
 
     if (expected_md5 && download_check_md5(dest_path, expected_md5))
         GOTOERR(error, "md5 checksum mismatch\n");
+
+    if (dl_stat) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        dl_stat->total_ms = (tv.tv_sec * 1000 + tv.tv_usec / 1000) - start_time;
+    }
 
     fclose(f);
     return 0;
@@ -611,8 +639,13 @@ int main(int argc, char **argv) {
     for (int i = 0; i < num_deps; i++)
         printf("  dep %d: %"PRId64"\n", i, deps[i]);
 
-    if (download_pkg(id, "tcc.zip", struct_info->file_size, struct_info->md5))
+    download_stat_t dl_stat;
+
+    if (download_pkg(id, "tcc.zip", struct_info->file_size, struct_info->md5, &dl_stat) == -1)
         return 1;
+
+    printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost\n",
+                dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost);
 
     close(fd);
     return 0;
