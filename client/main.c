@@ -501,6 +501,52 @@ int parse_ipandport(char *exe, const char *str, struct sockaddr_in *addr) {
     return 0;
 }
 
+typedef enum {
+    CMD_ERROR = -1,
+    CMD_INSTALL,
+    CMD_REMOVE,
+    CMD_LIST,
+    CMD_UPDATE,
+    CMD_HELP
+} command_t;
+
+typedef struct {
+    command_t cmd;
+    int needs_arg;
+    const char *str[8];
+} cmd_entry_t;
+
+cmd_entry_t commands[] = {
+    { CMD_INSTALL, 1, { "install", "i", NULL } },
+    { CMD_REMOVE,  1, { "remove", "rm", "r", NULL } },
+    { CMD_LIST,    0, { "list", "ls", "l", NULL } },
+    { CMD_UPDATE,  0, { "update", "up", "u", NULL } },
+    { CMD_HELP,    0, { "help", "--help", "-h", NULL } }
+};
+
+command_t parse_args(int argc, char **argv) {
+    if (argc < 2)
+        return CMD_HELP;
+
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        for (size_t j = 0; commands[i].str[j]; j++) {
+            if (strcmp(argv[1], commands[i].str[j]) == 0) {
+                if (commands[i].needs_arg && argc < 3) {
+                    fprintf(stderr, "command '%s' needs an argument\n", argv[1]);
+                    return CMD_ERROR;
+                } else if (!commands[i].needs_arg && argc > 2) {
+                    fprintf(stderr, "command '%s' does not take arguments\n", argv[1]);
+                    return CMD_ERROR;
+                }
+                return commands[i].cmd;
+            }
+        }
+    }
+
+    fprintf(stderr, "unknown command: %s\n", argv[1]);
+    return CMD_ERROR;
+}
+
 int main(int argc, char **argv) {
     struct sockaddr_in addr;
     char *ip_str;
