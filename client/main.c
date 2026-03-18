@@ -379,6 +379,12 @@ int download_pkg(int64_t id, const char *dest_path, stp_info_t *info, download_s
     if (!f)
         RETERR("failed to open local file for writing\n");
 
+    // set the final size
+    if (fseek(f, info->file_size - 2, SEEK_SET) != 0 || fwrite("", 1, 1, f) != 1) {
+        fclose(f);
+        RETERR("failed to set local file size\n");
+    }
+
     char received_parts[FAST_DL_ONCE]; // bitmap to track received parts
 
     uint32_t start_time = 0;
@@ -731,15 +737,13 @@ static int cmd_install_install(int64_t *dl_deps) {
     // in a real package manager, this would do the actual installation (moving files, running scripts, etc.)
     // here we just print the order of installation
 
-    printf("installing packages in this order:\n");
-
     int count = 0;
     while (dl_deps[count] != -1)
         count++;
 
     for (int i = count - 1; i >= 0; i--) {
-        printf("  %d\n", (int) dl_deps[i]);
         #if defined(__profanOS__)
+        printf("installing package %" PRId64 "...\n", dl_deps[i]);
         char dl_path[PATH_MAX];
         char extract_path[PATH_MAX];
         snprintf(dl_path, sizeof(dl_path), "tmp/%" PRId64 ".zip", dl_deps[i]);
@@ -749,9 +753,10 @@ static int cmd_install_install(int64_t *dl_deps) {
         runtime_args_t args = {
             PATH_UNZIP,
             profan_wd_path(),
-            4,
+            5,
             (char *[]) {
                 PATH_UNZIP,
+                "-q",
                 dl_path,
                 "-d",
                 extract_path,
@@ -789,10 +794,9 @@ static int cmd_install_install(int64_t *dl_deps) {
         runtime_args_t olivine_args = {
             PATH_OLIVINE,
             profan_wd_path(),
-            3,
+            2,
             (char *[]) {
                 PATH_OLIVINE,
-                "-d",
                 "install.olv",
                 NULL
             },
@@ -821,6 +825,7 @@ static int cmd_install_install(int64_t *dl_deps) {
         }
 
         #else
+        printf("  %d\n", (int) dl_deps[i]);
         printf("  installation not available...\n");
         #endif
     }
