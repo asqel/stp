@@ -875,13 +875,13 @@ static int cmd_install_install(id_name_pair_t *dl_deps) {
             return -1;
         }
 
-        // save the uninstall.olv file to /zada/stp/XXXXX.olv
+        // save the remove.olv file to /zada/stp/XXXXX.olv
 
-        char uninstall_dest[PATH_MAX];
-        snprintf(uninstall_dest, sizeof(uninstall_dest), "/zada/stp/%s.olv", dl_deps[i].name);
+        char remove_dest[PATH_MAX];
+        snprintf(remove_dest, sizeof(remove_dest), "/zada/stp/remove/%s.olv", dl_deps[i].name);
 
-        if (move_element("uninstall.olv", uninstall_dest)) {
-            fprintf(stderr, "failed to save uninstall script for package %s\n", dl_deps[i].name);
+        if (move_element("remove.olv", remove_dest)) {
+            fprintf(stderr, "failed to save remove script for package %s\n", dl_deps[i].name);
             return -1;
         }
 
@@ -900,42 +900,53 @@ static int cmd_install_install(id_name_pair_t *dl_deps) {
     return 0;
 }
 
-int cmd_install(const char *name) {
-    int64_t id = get_pkg_id(name);
+int cmd_install(char **names) {
+    int count, r = 0;
+    int64_t *ids;
+    
+    for (count = 0; names[count]; count++);
+    ids = malloc(count * sizeof(int64_t));
 
-    if (id == -1)
-        return 1;
-
-    if (id == 0) {
-        fprintf(stderr, "package '%s' not found\n", name);
+    for (int i = 0; i < count; i++) {
+        ids[i] = get_pkg_id(names[i]);
+        if (ids[i] == 0)
+            fprintf(stderr, "package '%s' not found\n", names[i]);
+        else if (ids[i] != -1)
+            continue;
+        free(ids);
         return 1;
     }
 
     remove_full_dir(TEMP_DIR);  // clean temp directory before downloading
     mkdir(TEMP_DIR, 0755);      // ensure tmp directory exists
     #ifdef __profanOS__
-    mkdir("/zada/stp", 0755);   // ensure uninstall script directory exists
+    mkdir("/zada/stp", 0755);           // ensure remove script directory exists
+    mkdir("/zada/stp/remove", 0755);   // ensure remove script directory exists
     #endif
 
-    id_name_pair_t *dls = cmd_install_dl(id, NULL);
+    id_name_pair_t *dl_deps = NULL;
 
-    if (dls == NULL) {
-        remove_full_dir(TEMP_DIR);
-        return 1;
+    for (int i = 0; i < count; i++) {
+        dl_deps = cmd_install_dl(ids[i], dl_deps);
+        if (dl_deps == NULL) {
+            r = 1;
+            break;
+        }
     }
 
-    printf("all downloads complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
-                g_alltime_dl_stat.total_ms, g_alltime_dl_stat.packets_recv, g_alltime_dl_stat.packets_lost,
-                (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) / (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
+    if (r == 0) {
+        printf("all downloads complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
+                    g_alltime_dl_stat.total_ms, g_alltime_dl_stat.packets_recv, g_alltime_dl_stat.packets_lost,
+                    (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) / (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
 
-    if (cmd_install_install(dls))
-        return 1;
+        r = cmd_install_install(dl_deps);
+    }
 
-    if (remove_full_dir(TEMP_DIR))
-        return 1;
+    remove_full_dir(TEMP_DIR);
+    free(dl_deps);
+    free(ids);
 
-    free(dls);
-    return 0;
+    return r;
 }
 
 /*******************************************
@@ -970,11 +981,6 @@ cmd_entry_t commands[] = {
 command_t parse_args(int argc, char **argv) {
     if (argc < 2)
         return CMD_HELP;
-
-    if (argc > 3) {
-        fprintf(stderr, "usage: %s <command> [name]\n", argv[0]);
-        return 1;
-    }
 
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
         for (size_t j = 0; commands[i].str[j]; j++) {
@@ -1016,7 +1022,7 @@ int main(int argc, char **argv) {
             ret = cmd_list();
             break;
         case CMD_INSTALL:
-            ret = cmd_install(argv[2]);
+            ret = cmd_install(argv + 2);
             break;
         default:
             fprintf(stderr, "command not implemented yet\n");
