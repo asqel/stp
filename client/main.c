@@ -15,9 +15,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <string.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <netdb.h>
 #include <errno.h>
@@ -25,11 +27,12 @@
 #include <poll.h>
 
 #if defined(__profanOS__)
-#include <profan/md5.h>
-#endif
-
-#if defined(__linux__)
-#include <sys/ioctl.h> // terminal size for progress bar
+    #include <modules/panda.h>
+    #include <profan/md5.h>
+    #include <sys/wait.h>
+    #include <profan.h>
+#elif defined(__linux__)
+    #include <sys/ioctl.h> // terminal size for progress bar
 #endif
 
 // client setings (editable)
@@ -37,6 +40,9 @@
 #define RECV_TIMEOUT_MS 1000  // stop waiting for a server response after this delay
 #define MAX_RETRY_COUNT 4     // give up after this many retries (after a timeout)
 #define FAST_DL_ONCE    16    // ask for 16 parts at once in download_pkg
+
+#define PATH_UNZIP   "/bin/f/bsdunzip.elf"
+#define PATH_OLIVINE "/bin/f/olivine.elf"
 
 // protocol types
 #define GET_ID          0x01
@@ -64,7 +70,7 @@
 #define STP_MAX_NAME_SIZE   64
 
 // XID and TYPE decoding macros
-#define R64_TO_XID(r) ((r) & 0xFFFFFFFFFF)
+#define R64_TO_XID(r)  ((r) & 0xFFFFFFFFFF)
 #define R64_TO_TYPE(r) (((r) >> 48) & 0xFFFF)
 #define TYPE_IS_ERR(t) (((t) & 0xFF00) == 0xFF00)
 
@@ -612,12 +618,16 @@ int setup_connection(void) {
 }
 
 int setup(void) {
-    #if defined(__linux__)
+    #if defined(__profanOS__)
+        panda_get_size((uint32_t *)&G_TERMINAL_WIDTH, NULL);
+        if (G_TERMINAL_WIDTH == 0)
+            G_TERMINAL_WIDTH = 80;
+    #elif defined(__linux__)
         struct winsize w;
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
         G_TERMINAL_WIDTH = w.ws_col;
     #else
-        G_TERMINAL_WIDTH = 80; // default width for progress bars
+        G_TERMINAL_WIDTH = 80;
     #endif
 
     return setup_connection();
@@ -655,35 +665,44 @@ int cmd_list(void) {
 
 download_stat_t g_alltime_dl_stat;
 
-int cmd_install_sub(uint64_t usrid, const char *name) {
-    int64_t id = usrid;
-
-    if (id == 0)
-        id = get_pkg_id(name);
-
-    if (id == -1)
-        return 1;
-
-    if (id == 0) {
-        fprintf(stderr, "package '%s' not found\n", name);
-        return 1;
-    }
-
+static int64_t *cmd_install_dl(uint64_t id, int64_t *dl_deps) {
     stp_info_t info;
 
     if (get_pkg_info(id, &info) == -1)
-        return 1;
+        return NULL;
 
     int64_t deps[STP_MAX_DEPS];
     int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
-    if (num_deps == -1)
-        return 1;
 
-    if (num_deps > 0) {
-        for (int i = 0; i < num_deps; i++) {
-            printf("get package %"PRId64", dependency of %s\n", deps[i], info.name);
-            cmd_install_sub(deps[i], NULL);
+    if (num_deps == -1)
+        return NULL;
+
+    int dl_deps_count = 0;
+    if (dl_deps) {
+        while (dl_deps[dl_deps_count] != -1)
+            dl_deps_count++;
+    }
+
+    dl_deps = realloc(dl_deps, (dl_deps_count + 2) * sizeof(int64_t));
+    dl_deps[dl_deps_count++] = id;
+    dl_deps[dl_deps_count] = -1;
+
+    for (int i = 0; i < num_deps; i++) {
+        for (int j = 0; j < dl_deps_count; j++) {
+            if (deps[i] == dl_deps[j]) {
+                fprintf(stderr, "dependency %"PRId64" of %s already downloaded, skipping\n", deps[i], info.name);
+                goto next_dep;
+            }
         }
+
+        printf("get package %"PRId64", dependency of %s\n", deps[i], info.name);
+        dl_deps = cmd_install_dl(deps[i], dl_deps);
+        if (dl_deps == NULL)
+            return NULL;
+        dl_deps_count = 0;
+        while (dl_deps[dl_deps_count] != -1)
+            dl_deps_count++;
+        next_dep:;
     }
 
     printf("PACKAGE INFO:\n");
@@ -696,26 +715,144 @@ int cmd_install_sub(uint64_t usrid, const char *name) {
     download_stat_t dl_stat;
 
     char dl_path[256];
-    snprintf(dl_path, sizeof(dl_path), "%s.zip", info.name);
+    snprintf(dl_path, sizeof(dl_path), "tmp/%" PRId64 ".zip", id);
 
     if (download_pkg(id, dl_path, &info, &dl_stat) == -1)
-        return 1;
+        return NULL;
 
     g_alltime_dl_stat.packets_lost += dl_stat.packets_lost;
     g_alltime_dl_stat.packets_recv += dl_stat.packets_recv;
     g_alltime_dl_stat.total_ms     += dl_stat.total_ms;
 
+    return dl_deps;
+}
+
+static int cmd_install_install(int64_t *dl_deps) {
+    // in a real package manager, this would do the actual installation (moving files, running scripts, etc.)
+    // here we just print the order of installation
+
+    printf("installing packages in this order:\n");
+
+    int count = 0;
+    while (dl_deps[count] != -1)
+        count++;
+
+    for (int i = count - 1; i >= 0; i--) {
+        printf("  %d\n", (int) dl_deps[i]);
+        #if defined(__profanOS__)
+        char dl_path[PATH_MAX];
+        char extract_path[PATH_MAX];
+        snprintf(dl_path, sizeof(dl_path), "tmp/%" PRId64 ".zip", dl_deps[i]);
+        snprintf(extract_path, sizeof(extract_path), "tmp/%" PRId64, dl_deps[i]);
+
+        // unzip
+        runtime_args_t args = {
+            PATH_UNZIP,
+            profan_wd_path(),
+            4,
+            (char *[]) {
+                PATH_UNZIP,
+                dl_path,
+                "-d",
+                extract_path,
+                NULL
+            },
+            environ,
+            1 // sleep mode
+        };
+
+        int pid, status;
+
+        if (run_ifexist(&args, &pid)) {
+            fprintf(stderr, "failed to run unzip for package %" PRId64 "\n", dl_deps[i]);
+            return -1;
+        }
+
+        waitpid(pid, &status, 0);
+        status = WEXITSTATUS(status);
+
+        if (status != 0) {
+            fprintf(stderr, "failed to unzip package %"PRId64": exit code %d\n", dl_deps[i], status);
+            return -1;
+        }
+
+        // chdir
+        char cwd[PATH_MAX];
+        getcwd(cwd, sizeof(cwd));
+
+        if (chdir(extract_path) != 0) {
+            fprintf(stderr, "failed to chdir to package %" PRId64 "\n", dl_deps[i]);
+            return -1;
+        }
+
+        // olivine
+        runtime_args_t olivine_args = {
+            PATH_OLIVINE,
+            profan_wd_path(),
+            3,
+            (char *[]) {
+                PATH_OLIVINE,
+                "-d",
+                "install.olv",
+                NULL
+            },
+            environ,
+            1 // sleep mode
+        };
+
+        if (run_ifexist(&olivine_args, &pid)) {
+            fprintf(stderr, "failed to run olivine for package %" PRId64 "\n", dl_deps[i]);
+            return -1;
+        }
+    
+        waitpid(pid, &status, 0);
+
+        status = WEXITSTATUS(status);
+
+        if (status != 0) {
+            fprintf(stderr, "failed to install package %" PRId64 ": olivine exit code %d\n", dl_deps[i], status);
+            return -1;
+        }
+
+        // chdir back
+        if (chdir(cwd) != 0) {
+            fprintf(stderr, "failed to chdir back after installing package %" PRId64 "\n", dl_deps[i]);
+            return -1;
+        }
+
+        #else
+        printf("  installation not available...\n");
+        #endif
+    }
+
     return 0;
 }
 
 int cmd_install(const char *name) {
-    if (cmd_install_sub(0, name) == -1)
+    int64_t id = get_pkg_id(name);
+
+    if (id == -1)
+        return 1;
+
+    if (id == 0) {
+        fprintf(stderr, "package '%s' not found\n", name);
+        return 1;
+    }
+
+    mkdir("tmp", 0755); // ensure tmp directory exists
+
+    int64_t *dls = cmd_install_dl(id, NULL);
+
+    if (dls == NULL)
         return 1;
 
     printf("all downloads complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
                 g_alltime_dl_stat.total_ms, g_alltime_dl_stat.packets_recv, g_alltime_dl_stat.packets_lost,
                 (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) / (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
 
+    cmd_install_install(dls);
+
+    free(dls);
     return 0;
 }
 
