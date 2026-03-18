@@ -79,10 +79,10 @@ for i, addon in enumerate(ADDONS):
 
             exec(f"wget -q {f['url']} -O {os.path.join(path, 'tmp', f['name'])}")
             
-            exec(f"echo \"echo '+ {profan_path}'\" >> {os.path.join(path, 'tmp', 'install.olv')}")
+            exec(f"echo \"echo '-- + {profan_path}'\" >> {os.path.join(path, 'tmp', 'install.olv')}")
             exec(f"echo \"mv -f {file} {profan_path}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
 
-            exec(f"echo \"echo '- {profan_path}'\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
+            exec(f"echo \"echo '-- - {profan_path}'\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
             exec(f"echo \"rm -f {profan_path}\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
             continue
 
