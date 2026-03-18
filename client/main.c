@@ -40,9 +40,11 @@
 #define RECV_TIMEOUT_MS 1000  // stop waiting for a server response after this delay
 #define MAX_RETRY_COUNT 4     // give up after this many retries (after a timeout)
 #define FAST_DL_ONCE    16    // ask for 16 parts at once in download_pkg
+#define TEMP_DIR "/tmp/stp"   // temporary directory for downloads and extraction
 
 #define PATH_UNZIP   "/bin/f/bsdunzip.elf"
 #define PATH_OLIVINE "/bin/f/olivine.elf"
+#define PATH_RM      "/bin/c/rm.elf"
 
 // protocol types
 #define GET_ID          0x01
@@ -319,7 +321,7 @@ static int download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_
 }
 
 static int download_check_md5(const char *file, uint8_t *expected_md5) {
-    #if defined(__profanOS__)
+    #ifdef __profanOS__
         // returns 0 if md5 matches, -1 if not
         uint8_t result[16];
 
@@ -721,7 +723,7 @@ static int64_t *cmd_install_dl(uint64_t id, int64_t *dl_deps) {
     download_stat_t dl_stat;
 
     char dl_path[256];
-    snprintf(dl_path, sizeof(dl_path), "tmp/%" PRId64 ".zip", id);
+    snprintf(dl_path, sizeof(dl_path), TEMP_DIR "/%" PRId64 ".zip", id);
 
     if (download_pkg(id, dl_path, &info, &dl_stat) == -1)
         return NULL;
@@ -733,6 +735,75 @@ static int64_t *cmd_install_dl(uint64_t id, int64_t *dl_deps) {
     return dl_deps;
 }
 
+static int remove_full_dir(const char *path) {
+    #ifdef __profanOS__
+        runtime_args_t args = {
+            PATH_RM,
+            profan_wd_path(),
+            3,
+            (char *[]) {
+                "rm",
+                "-rf",
+                (char *) path,
+                NULL
+            },
+            environ,
+            1 // sleep mode
+        };  
+
+        if (run_ifexist(&args, NULL)) {
+            fprintf(stderr, "failed to run rm for path %s\n", path);
+            return -1;
+        }
+
+        return 0;
+    #else
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", path);
+        return system(cmd) == 0 ? 0 : -1;
+    #endif
+}
+
+
+static int move_element(const char *src, const char *dst) {
+    /*if (rename(src, dst) == 0)
+        return 0;*/
+
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        fprintf(stderr, "mv: Failed to open source file '%s'\n", src);
+        return 1;
+    }
+
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fprintf(stderr, "mv: Failed to open destination file '%s'\n", dst);
+        fclose(in);
+        return 1;
+    }
+
+    char buffer[8192];
+    size_t bytes;
+    int ret = 0;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+        if (fwrite(buffer, 1, bytes, out) != bytes) {
+            fprintf(stderr, "mv: Failed to write to destination file '%s'\n", dst);
+            ret = 1;
+            break;
+        }
+    }
+
+    if (ferror(in)) {
+        fprintf(stderr, "mv: Failed to read from source file '%s'\n", src);
+        ret = 1;
+    }
+
+    fclose(in);
+    fclose(out);
+
+    return ret;
+}
+
 static int cmd_install_install(int64_t *dl_deps) {
     // in a real package manager, this would do the actual installation (moving files, running scripts, etc.)
     // here we just print the order of installation
@@ -742,12 +813,12 @@ static int cmd_install_install(int64_t *dl_deps) {
         count++;
 
     for (int i = count - 1; i >= 0; i--) {
-        #if defined(__profanOS__)
+        #ifdef __profanOS__
         printf("installing package %" PRId64 "...\n", dl_deps[i]);
         char dl_path[PATH_MAX];
         char extract_path[PATH_MAX];
-        snprintf(dl_path, sizeof(dl_path), "tmp/%" PRId64 ".zip", dl_deps[i]);
-        snprintf(extract_path, sizeof(extract_path), "tmp/%" PRId64, dl_deps[i]);
+        snprintf(dl_path, sizeof(dl_path), TEMP_DIR "/%" PRId64 ".zip", dl_deps[i]);
+        snprintf(extract_path, sizeof(extract_path), TEMP_DIR "/%" PRId64, dl_deps[i]);
 
         // unzip
         runtime_args_t args = {
@@ -766,18 +837,10 @@ static int cmd_install_install(int64_t *dl_deps) {
             1 // sleep mode
         };
 
-        int pid, status;
+        int pid;
 
         if (run_ifexist(&args, &pid)) {
             fprintf(stderr, "failed to run unzip for package %" PRId64 "\n", dl_deps[i]);
-            return -1;
-        }
-
-        waitpid(pid, &status, 0);
-        status = WEXITSTATUS(status);
-
-        if (status != 0) {
-            fprintf(stderr, "failed to unzip package %"PRId64": exit code %d\n", dl_deps[i], status);
             return -1;
         }
 
@@ -808,13 +871,15 @@ static int cmd_install_install(int64_t *dl_deps) {
             fprintf(stderr, "failed to run olivine for package %" PRId64 "\n", dl_deps[i]);
             return -1;
         }
-    
-        waitpid(pid, &status, 0);
 
-        status = WEXITSTATUS(status);
+        // save the uninstall.olv file to /zada/stp/XXXXX.olv
+        printf("saving uninstall script...\n");
 
-        if (status != 0) {
-            fprintf(stderr, "failed to install package %" PRId64 ": olivine exit code %d\n", dl_deps[i], status);
+        char uninstall_dest[PATH_MAX];
+        snprintf(uninstall_dest, sizeof(uninstall_dest), "/zada/stp/%" PRId64 ".olv", dl_deps[i]);
+
+        if (move_element("uninstall.olv", uninstall_dest)) {
+            fprintf(stderr, "failed to save uninstall script for package %" PRId64 "\n", dl_deps[i]);
             return -1;
         }
 
@@ -844,18 +909,27 @@ int cmd_install(const char *name) {
         return 1;
     }
 
-    mkdir("tmp", 0755); // ensure tmp directory exists
+    mkdir(TEMP_DIR, 0755); // ensure tmp directory exists
+    #ifdef __profanOS__
+    mkdir("/zada/stp", 0755); // ensure uninstall script directory exists
+    #endif
 
     int64_t *dls = cmd_install_dl(id, NULL);
 
-    if (dls == NULL)
+    if (dls == NULL) {
+        remove_full_dir(TEMP_DIR);
         return 1;
+    }
 
     printf("all downloads complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
                 g_alltime_dl_stat.total_ms, g_alltime_dl_stat.packets_recv, g_alltime_dl_stat.packets_lost,
                 (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) / (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
 
-    cmd_install_install(dls);
+    if (cmd_install_install(dls))
+        return 1;
+
+    if (remove_full_dir(TEMP_DIR))
+        return 1;
 
     free(dls);
     return 0;
