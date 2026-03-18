@@ -70,6 +70,12 @@ for i, addon in enumerate(ADDONS):
 
     exec(f"mkdir {os.path.join(path, 'tmp')}")
 
+    install_file = open(os.path.join(path, "tmp", "install.olv"), "w")
+    uninstall_file = open(os.path.join(path, "tmp", "uninstall.olv"), "w")
+
+    install_file.write("#!/bin/f/olivine.elf\n\n")
+    uninstall_file.write("#!/bin/f/olivine.elf\n\n")
+
     for file in addon["files"]:
         print(f"  {file}")
         f = get_file_from_name(file)
@@ -78,12 +84,14 @@ for i, addon in enumerate(ADDONS):
             profan_path = "/" + "/".join(f['profan_path'])
 
             exec(f"wget -q {f['url']} -O {os.path.join(path, 'tmp', f['name'])}")
-            
-            exec(f"echo \"echo -- '+ {profan_path}'\" >> {os.path.join(path, 'tmp', 'install.olv')}")
-            exec(f"echo \"mv -f {file} {profan_path}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
 
-            exec(f"echo \"echo -- '- {profan_path}'\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
-            exec(f"echo \"rm -f {profan_path}\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
+            install_file.write(f"echo -- '+ {profan_path}'\n")
+            install_file.write(f"mkdir -p '{os.path.dirname(profan_path)}'\n")
+            install_file.write(f"mv -f '{file}' '{profan_path}'\n\n")
+
+            uninstall_file.write(f"echo -- '- {profan_path}'\n")
+            uninstall_file.write(f"rm -f '{profan_path}'\n\n")
+
             continue
 
         profan_path = "/" + "/".join(f['profan_path'])
@@ -95,12 +103,19 @@ for i, addon in enumerate(ADDONS):
         exec(f"tar -xf {targz_path} -C {os.path.join(path, 'tmp', f['name'])}")
         exec(f"rm -f {targz_path}")
 
-        exec(f"echo \"set old_path !path\" >> {os.path.join(path, 'tmp', 'install.olv')}")
-        exec(f"echo \"cd {file}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
-        exec(f"echo \"for e *; echo -- '+ {profan_path}/!e'; mv -f !e {profan_path}/!e; end\" >> {os.path.join(path, 'tmp', 'install.olv')}")
+        for e in os.listdir(os.path.join(path, "tmp", f['name'])):
+            install_file.write(f"echo -- '+ {profan_path}/{e}'\n")
+            install_file.write(f"mkdir -p '{profan_path}'\n")
+            install_file.write(f"mv -f '{os.path.join(path, 'tmp', f['name'], e)}' '{profan_path}/{e}'\n")
 
-        exec(f"echo \"echo -- '- {profan_path}'\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
-        exec(f"echo \"rm -rf {profan_path}\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
+            uninstall_file.write(f"echo -- '- {profan_path}/{e}'\n")
+            uninstall_file.write(f"rm -rf '{profan_path}/{e}'\n")
+
+        install_file.write("\n")
+        uninstall_file.write("\n")
+
+    install_file.close()
+    uninstall_file.close()
 
     exec(f"cd {os.path.join(path, 'tmp')} && zip -rq {os.path.join(path, OUTPUT_DIR, addon['name'] + '.zip')} ./*")
     exec(f"rm -rf {os.path.join(path, 'tmp')}")
