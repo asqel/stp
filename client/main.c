@@ -345,10 +345,10 @@ static int download_check_md5(const char *file, uint8_t *expected_md5) {
     #endif
 }
 
-static void download_print_progress(int64_t received, int64_t total) {
-    int bar_width = G_TERMINAL_WIDTH - 30;
-    int progress = (int) ((received * bar_width) / total);
-    printf("\r[");
+static void download_print_progress(int64_t received, stp_info_t *info) {
+    int bar_width = G_TERMINAL_WIDTH / 2;
+    int progress = (int) ((received * bar_width) / info->file_size);
+    printf("\r%6.2f%% [", (double) received * 100 / info->file_size);
     for (int i = 0; i < bar_width; i++) {
         if (i < progress)
             printf("=");
@@ -357,13 +357,13 @@ static void download_print_progress(int64_t received, int64_t total) {
         else
             printf(" ");
     }
-    printf("] %6.2f%%", (double) received * 100 / total);
+    printf("] %s", info->name);
     fflush(stdout);
 }
 
-int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *expected_md5, download_stat_t *dl_stat) {
+int download_pkg(int64_t id, const char *dest_path, stp_info_t *info, download_stat_t *dl_stat) {
     uint8_t buf[STP_PKT_SIZE];
-    int64_t received_bytes = 0, offset = 0;
+    uint64_t received_bytes = 0, offset = 0;
 
     if (FAST_DL_ONCE > 255)
         RETERR("FAST_DL_ONCE must be < 256\n");
@@ -384,7 +384,7 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
         start_time = tv.tv_sec * 1000 + tv.tv_usec / 1000;
     }
 
-    while (offset < file_size) {
+    while (offset < info->file_size) {
         int64_t part_offset = offset;
         int to_wait;
 
@@ -396,12 +396,12 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
         // receive responses
         int retry_count = 0;
 
-        for (to_wait = 0; to_wait < FAST_DL_ONCE && offset + to_wait * STP_MAX_PART_SIZE < file_size; to_wait++);
+        for (to_wait = 0; to_wait < FAST_DL_ONCE && offset + to_wait * STP_MAX_PART_SIZE < info->file_size; to_wait++);
         send_and_wait:
 
         // send requests for the parts
-        for (int i = 0; i < FAST_DL_ONCE && offset < file_size; i++) {
-            if (!received_parts[i] && download_send(xid + i, id, offset, file_size))
+        for (int i = 0; i < FAST_DL_ONCE && offset < info->file_size; i++) {
+            if (!received_parts[i] && download_send(xid + i, id, offset, info->file_size))
                 goto error;
 
             offset += STP_MAX_PART_SIZE;
@@ -442,7 +442,7 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
             if ((R64_TO_XID(r) & 0xFFFFFFFF00) != xid || part_index >= FAST_DL_ONCE || received_parts[part_index])
                 continue; // probably an old response timed out
 
-            int expected_len = file_size - (part_offset + part_index * STP_MAX_PART_SIZE);
+            int expected_len = info->file_size - (part_offset + part_index * STP_MAX_PART_SIZE);
             if (expected_len > STP_MAX_PART_SIZE)
                 expected_len = STP_MAX_PART_SIZE;
             expected_len += 8; // +8 for the header
@@ -461,7 +461,7 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
 
             received_bytes += rlen;
             if (!G_DOWNLOAD_MUTE)
-                download_print_progress(received_bytes, file_size);
+                download_print_progress(received_bytes, info);
 
             if (dl_stat)
                 dl_stat->packets_recv++;
@@ -472,13 +472,13 @@ int download_pkg(int64_t id, const char *dest_path, int64_t file_size, uint8_t *
     }
     printf("\n");
 
-    if (received_bytes != file_size)
+    if (received_bytes != info->file_size)
         GOTOERR(error, "download incomplete: received %"PRId64" bytes, expected %"PRId64"\n",
-                    received_bytes, file_size);
+                    received_bytes, info->file_size);
 
     fflush(f); // write before checking sum
 
-    if (expected_md5 && download_check_md5(dest_path, expected_md5))
+    if (download_check_md5(dest_path, info->md5))
         GOTOERR(error, "md5 checksum mismatch\n");
 
     if (dl_stat) {
@@ -505,7 +505,7 @@ int get_pkg_list(uint64_t **ids) {
     }
 
     // download the list
-    if (download_pkg(0, "pkg_list.tmp", info_buf->file_size, info_buf->md5, NULL) == -1) {
+    if (download_pkg(0, "pkg_list.tmp", info_buf, NULL) == -1) {
         free(info_buf);
         return -1;
     }
@@ -646,14 +646,16 @@ int cmd_list(void) {
             return 1;
         }
 
-        printf("  %s: %s\n", info.name, info.desc);
+        printf("  %s: %s (%"PRId64" KB)\n", info.name, info.desc, info.file_size / 1024);
     }
 
     free(ids);
     return 0;
 }
 
-int cmd_install(uint64_t usrid, const char *name) {
+download_stat_t g_alltime_dl_stat;
+
+int cmd_install_sub(uint64_t usrid, const char *name) {
     int64_t id = usrid;
 
     if (id == 0)
@@ -680,7 +682,7 @@ int cmd_install(uint64_t usrid, const char *name) {
     if (num_deps > 0) {
         for (int i = 0; i < num_deps; i++) {
             printf("get package %"PRId64", dependency of %s\n", deps[i], info.name);
-            cmd_install(deps[i], NULL);
+            cmd_install_sub(deps[i], NULL);
         }
     }
 
@@ -688,7 +690,7 @@ int cmd_install(uint64_t usrid, const char *name) {
     printf("  id        %"PRId64"\n", id);
     printf("  name      %s\n", info.name);
     printf("  desc      %s\n", info.desc);
-    printf("  file_size %"PRId64"\n", info.file_size);
+    printf("  file_size %"PRId64" KB\n", info.file_size / 1024);
     printf("  version   %u\n", info.version);
 
     download_stat_t dl_stat;
@@ -696,12 +698,23 @@ int cmd_install(uint64_t usrid, const char *name) {
     char dl_path[256];
     snprintf(dl_path, sizeof(dl_path), "%s.zip", info.name);
 
-    if (download_pkg(id, dl_path, info.file_size, info.md5, &dl_stat) == -1)
+    if (download_pkg(id, dl_path, &info, &dl_stat) == -1)
         return 1;
 
-    printf("download complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
-                dl_stat.total_ms, dl_stat.packets_recv, dl_stat.packets_lost,
-                (double) info.file_size / (1024 * 1024) / (dl_stat.total_ms / 1000.0));
+    g_alltime_dl_stat.packets_lost += dl_stat.packets_lost;
+    g_alltime_dl_stat.packets_recv += dl_stat.packets_recv;
+    g_alltime_dl_stat.total_ms     += dl_stat.total_ms;
+
+    return 0;
+}
+
+int cmd_install(const char *name) {
+    if (cmd_install_sub(0, name) == -1)
+        return 1;
+
+    printf("all downloads complete: %u ms, %"PRIu32" packets received, %"PRIu32" packets lost, %.2f MB/s\n",
+                g_alltime_dl_stat.total_ms, g_alltime_dl_stat.packets_recv, g_alltime_dl_stat.packets_lost,
+                (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) / (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
 
     return 0;
 }
@@ -784,7 +797,7 @@ int main(int argc, char **argv) {
             ret = cmd_list();
             break;
         case CMD_INSTALL:
-            ret = cmd_install(0, argv[2]);
+            ret = cmd_install(argv[2]);
             break;
         default:
             fprintf(stderr, "command not implemented yet\n");
