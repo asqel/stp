@@ -96,9 +96,10 @@ for i, addon in enumerate(ADDONS):
         exec(f"rm -f {targz_path}")
 
         exec(f"echo \"echo -- '+ {profan_path}'\" >> {os.path.join(path, 'tmp', 'install.olv')}")
-        exec(f"echo \"rm -rf {profan_path}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
-        exec(f"echo \"mv {file} {profan_path}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
-        
+        exec(f"echo \"set old_path !path\" >> {os.path.join(path, 'tmp', 'install.olv')}")
+        exec(f"echo \"cd {file}\" >> {os.path.join(path, 'tmp', 'install.olv')}")
+        exec(f"echo \"for e *; mv !e {profan_path}/!e\" >> {os.path.join(path, 'tmp', 'install.olv')}")
+
         exec(f"echo \"echo -- '- {profan_path}'\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
         exec(f"echo \"rm -rf {profan_path}\" >> {os.path.join(path, 'tmp', 'uninstall.olv')}")
 
