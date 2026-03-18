@@ -106,7 +106,7 @@ for i, addon in enumerate(ADDONS):
         for e in os.listdir(os.path.join(path, "tmp", f['name'])):
             install_file.write(f"echo -- '+ {profan_path}/{e}'\n")
             install_file.write(f"mkdir -p '{profan_path}'\n")
-            install_file.write(f"mv -f '{os.path.join(path, 'tmp', f['name'], e)}' '{profan_path}/{e}'\n")
+            install_file.write(f"mv -f '{file}/{e}' '{profan_path}/{e}'\n")
 
             uninstall_file.write(f"echo -- '- {profan_path}/{e}'\n")
             uninstall_file.write(f"rm -rf '{profan_path}/{e}'\n")
