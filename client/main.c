@@ -39,8 +39,12 @@
 #define DEFAULT_IP "asqel.ddns.net:42024"
 #define RECV_TIMEOUT_MS 1000  // stop waiting for a server response after this delay
 #define MAX_RETRY_COUNT 4     // give up after this many retries (after a timeout)
-#define FAST_DL_ONCE    16    // ask for 16 parts at once in download_pkg
-#define TEMP_DIR "/tmp/stp"   // temporary directory for downloads and extraction
+#define FAST_DL_ONCE    16    // ask for 16 parts at once in pkg_download
+
+#define PATH_TEMP "/tmp/stp"     // temporary directory for downloads and extraction
+#define PATH_STP  "/zada/stp"    // path used as prefix for PKG_LIST and remove scripts
+#define PKG_RMDIR "remove"       // directory in PATH_STP to save remove scripts
+#define PKG_LIST  "pkg_list.csv" // file in PATH_STP to save intalled package list
 
 #define PATH_UNZIP   "/bin/f/bsdunzip.elf"
 #define PATH_OLIVINE "/bin/f/olivine.elf"
@@ -76,7 +80,7 @@
 #define R64_TO_TYPE(r) (((r) >> 48) & 0xFFFF)
 #define TYPE_IS_ERR(t) (((t) & 0xFF00) == 0xFF00)
 
-typedef struct {
+typedef struct {    // used by pkg_get_info
     char name[STP_MAX_NAME_SIZE];
     uint64_t file_size;
     uint32_t version;
@@ -84,15 +88,22 @@ typedef struct {
     char desc[STP_MAX_DESC_SIZE];
 } stp_info_t;
 
-typedef struct {
+typedef struct {    // used by pkg_download
     uint32_t packets_lost;
     uint32_t packets_recv;
     uint32_t total_ms;
 } download_stat_t;
 
+typedef struct {    // used by cmd_install_dl
+    int64_t id;
+    char name[STP_MAX_NAME_SIZE];
+} id_name_pair_t;
+
+download_stat_t g_alltime_dl_stat;
+
 int G_TERMINAL_WIDTH = 80;
 int G_DOWNLOAD_MUTE = 0;
-int G_FD;
+int G_SOCKET_FD;
 
 /*******************************************
  *                                        *
@@ -170,7 +181,7 @@ static int move_element(const char *src, const char *dst) {
  *                                        *
 ********************************************/
 
-char *error_to_str(uint16_t error) {
+static char *error_to_str(uint16_t error) {
     if (error >> 8 != 0xFF)
         return "Success";
     switch (error) {
@@ -198,18 +209,18 @@ static uint64_t get_random_xid(void) {
 static void purge_receive_buffer(void) {
     // [probably useless] purge the buffer to read only the new response
 
-    struct pollfd pfd = { .fd = G_FD, .events = POLLIN };
+    struct pollfd pfd = { .fd = G_SOCKET_FD, .events = POLLIN };
     uint8_t tmp[STP_PKT_SIZE];
 
     while (poll(&pfd, 1, 0) > 0) {
-        recv(G_FD, tmp, sizeof(tmp), 0);
+        recv(G_SOCKET_FD, tmp, sizeof(tmp), 0);
     }
 }
 
 static int timeout_recv(uint8_t *buf, size_t buf_size) {
     // returns -2 on timeout or the normal recv return value
 
-    struct pollfd pfd = { .fd = G_FD, .events = POLLIN };
+    struct pollfd pfd = { .fd = G_SOCKET_FD, .events = POLLIN };
 
     int poll_ret = poll(&pfd, 1, RECV_TIMEOUT_MS);
 
@@ -218,7 +229,7 @@ static int timeout_recv(uint8_t *buf, size_t buf_size) {
     else if (poll_ret == 0)
         return -2;
 
-    return recv(G_FD, buf, buf_size, 0);
+    return recv(G_SOCKET_FD, buf, buf_size, 0);
 }
 
 #define RETERR(...) return (fprintf(stderr, __VA_ARGS__), -1)
@@ -238,7 +249,7 @@ static int stp_sarap(uint8_t *buf, int buf_len, uint16_t type) {
 
     purge_receive_buffer();
 
-    if (send(G_FD, buf, buf_len, 0) == -1)
+    if (send(G_SOCKET_FD, buf, buf_len, 0) == -1)
         RETERR("stp: send error: %m\n");
 
     wait_for_response:
@@ -283,7 +294,7 @@ static int stp_sarap(uint8_t *buf, int buf_len, uint16_t type) {
  *                                        *
 ********************************************/
 
-int64_t get_pkg_id(const char *name) {
+int64_t pkg_get_id(const char *name) {
     if (strlen(name) > STP_MAX_NAME_SIZE)
         return 0; // too long to exist, 0 == not found
 
@@ -305,7 +316,7 @@ int64_t get_pkg_id(const char *name) {
     return r;
 }
 
-int64_t get_pkg_info(int64_t id, stp_info_t *info_buf) {
+int64_t pkg_get_info(int64_t id, stp_info_t *info_buf) {
     // returns 0 on success, -1 on error
 
     uint8_t buf[STP_PKT_SIZE];
@@ -334,7 +345,7 @@ int64_t get_pkg_info(int64_t id, stp_info_t *info_buf) {
     return 0;
 }
 
-int get_pkg_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
+int pkg_get_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
     // returns number of dependencies
 
     uint8_t buf[STP_PKT_SIZE];
@@ -378,7 +389,7 @@ static int download_send(uint64_t xid, int64_t id, int64_t offset, int64_t file_
     memcpy(buf + 16, &offset, 8);
     memcpy(buf + 24, &part_size, 2);
 
-    if (send(G_FD, buf, 26, 0) == -1)
+    if (send(G_SOCKET_FD, buf, 26, 0) == -1)
         RETERR("stp: [protocol err] send error: %m\n");
 
     return 0;
@@ -433,7 +444,7 @@ static void download_print_progress(int64_t received, stp_info_t *info) {
     fflush(stdout);
 }
 
-int download_pkg(int64_t id, const char *dest_path, stp_info_t *info, download_stat_t *dl_stat) {
+int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_stat_t *dl_stat) {
     uint8_t buf[STP_PKT_SIZE];
     uint64_t received_bytes = 0, offset = 0;
 
@@ -549,7 +560,9 @@ int download_pkg(int64_t id, const char *dest_path, stp_info_t *info, download_s
             to_wait--;
         }
     }
-    printf("\n");
+
+    if (!G_DOWNLOAD_MUTE)
+        printf("\n");
 
     if (received_bytes != info->file_size)
         GOTOERR(error, "stp: error: received %"PRId64" bytes, expected %"PRId64"\n",
@@ -575,16 +588,16 @@ int download_pkg(int64_t id, const char *dest_path, stp_info_t *info, download_s
     return -1;
 }
 
-int get_pkg_list(uint64_t **ids) {
+int pkg_get_list(uint64_t **ids) {
     stp_info_t *info_buf = malloc(sizeof(stp_info_t));
 
-    if (get_pkg_info(0, info_buf) == -1) {
+    if (pkg_get_info(0, info_buf) == -1) {
         free(info_buf);
         return -1;
     }
 
     // download the list
-    if (download_pkg(0, "pkg_list.tmp", info_buf, NULL) == -1) {
+    if (pkg_download(0, "pkg_list.tmp", info_buf, NULL) == -1) {
         free(info_buf);
         return -1;
     }
@@ -616,11 +629,19 @@ int get_pkg_list(uint64_t **ids) {
 
 /*******************************************
  *                                        *
+ *     LOCAL PACKAGE LIST MANAGEMENT      *
+ *                                        *
+********************************************/
+
+
+
+/*******************************************
+ *                                        *
  *      UDP INITIALIZATION FUNCTIONS      *
  *                                        *
 ********************************************/
 
-int parse_ipandport(const char *str, struct sockaddr_in *addr) {
+static int parse_ipandport(const char *str, struct sockaddr_in *addr) {
     // truc.ddns.net:1234 or 127.0.0.1:1234
 
     char ip[256];
@@ -668,14 +689,14 @@ int parse_ipandport(const char *str, struct sockaddr_in *addr) {
     return 0;
 }
 
-int setup_connection(void) {
+static int setup_connection(void) {
     struct sockaddr_in addr;
 
     if (parse_ipandport(DEFAULT_IP, &addr))
         return 1;
 
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    G_FD = fd;
+    G_SOCKET_FD = fd;
 
     if (fd < 0) {
         return 1;
@@ -714,7 +735,7 @@ int setup(void) {
 
 int cmd_list(void) {
     uint64_t *ids;
-    int num_ids = get_pkg_list(&ids);
+    int num_ids = pkg_get_list(&ids);
 
     if (num_ids < 0)
         return 1;
@@ -724,7 +745,7 @@ int cmd_list(void) {
     for (int i = 0; i < num_ids; i++) {
         stp_info_t info;
 
-        if (get_pkg_info(ids[i], &info) == -1) {
+        if (pkg_get_info(ids[i], &info) == -1) {
             free(ids);
             return 1;
         }
@@ -736,21 +757,14 @@ int cmd_list(void) {
     return 0;
 }
 
-download_stat_t g_alltime_dl_stat;
-
-typedef struct {
-    int64_t id;
-    char name[STP_MAX_NAME_SIZE];
-} id_name_pair_t;
-
 static id_name_pair_t *cmd_install_dl(uint64_t id, id_name_pair_t *dl_deps) {
     stp_info_t info;
 
-    if (get_pkg_info(id, &info) == -1)
+    if (pkg_get_info(id, &info) == -1)
         return NULL;
 
     int64_t deps[STP_MAX_DEPS];
-    int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
+    int num_deps = pkg_get_deps(id, deps, STP_MAX_DEPS);
 
     if (num_deps == -1)
         return NULL;
@@ -785,20 +799,14 @@ static id_name_pair_t *cmd_install_dl(uint64_t id, id_name_pair_t *dl_deps) {
         next_dep:;
     }
 
-    /* printf("PACKAGE INFO:\n");
-    printf("  id        %"PRId64"\n", id);
-    printf("  name      %s\n", info.name);
-    printf("  desc      %s\n", info.desc);
-    printf("  file_size %"PRId64" KB\n", info.file_size / 1024);
-    printf("  version   %u\n", info.version); */
     printf("downloading %s v%d: %s (%"PRId64" KB)\n", info.name, info.version, info.desc, info.file_size / 1024);
 
     download_stat_t dl_stat;
 
     char dl_path[PATH_MAX];
-    snprintf(dl_path, sizeof(dl_path), TEMP_DIR "/%s.zip", info.name);
+    snprintf(dl_path, sizeof(dl_path), PATH_TEMP "/%s.zip", info.name);
 
-    if (download_pkg(id, dl_path, &info, &dl_stat) == -1)
+    if (pkg_download(id, dl_path, &info, &dl_stat) == -1)
         return NULL;
 
     g_alltime_dl_stat.packets_lost += dl_stat.packets_lost;
@@ -814,12 +822,12 @@ static int cmd_install_install(id_name_pair_t *dl_deps) {
         count++;
 
     for (int i = count - 1; i >= 0; i--) {
-        #ifdef __profanOS__
         printf("installing %s\n", dl_deps[i].name);
+        #ifdef __profanOS__
         char dl_path[PATH_MAX];
         char extract_path[PATH_MAX];
-        snprintf(dl_path, sizeof(dl_path), TEMP_DIR "/%s.zip", dl_deps[i].name);
-        snprintf(extract_path, sizeof(extract_path), TEMP_DIR "/%s", dl_deps[i].name);
+        snprintf(dl_path, sizeof(dl_path), PATH_TEMP "/%s.zip", dl_deps[i].name);
+        snprintf(extract_path, sizeof(extract_path), PATH_TEMP "/%s", dl_deps[i].name);
 
         // unzip
         runtime_args_t args = {
@@ -873,10 +881,9 @@ static int cmd_install_install(id_name_pair_t *dl_deps) {
             return -1;
         }
 
-        // save the remove.olv file to /zada/stp/XXXXX.olv
-
+        // save the remove.olv
         char remove_dest[PATH_MAX];
-        snprintf(remove_dest, sizeof(remove_dest), "/zada/stp/remove/%s.olv", dl_deps[i].name);
+        snprintf(remove_dest, sizeof(remove_dest), PATH_STP "/" PKG_RMDIR "/%s.olv", dl_deps[i].name);
 
         if (move_element("remove.olv", remove_dest)) {
             fprintf(stderr, "stp: Failed to save remove script for package %s\n", dl_deps[i].name);
@@ -888,10 +895,6 @@ static int cmd_install_install(id_name_pair_t *dl_deps) {
             fprintf(stderr, "stp: Failed to chdir back\n", dl_deps[i].name);
             return -1;
         }
-
-        #else
-        printf("  %s\n", dl_deps[i].name);
-        printf("  installation not available...\n");
         #endif
     }
 
@@ -906,7 +909,7 @@ int cmd_install(char **names) {
     ids = malloc(count * sizeof(int64_t));
 
     for (int i = 0; i < count; i++) {
-        ids[i] = get_pkg_id(names[i]);
+        ids[i] = pkg_get_id(names[i]);
         if (ids[i] == 0)
             fprintf(stderr, "stp: %s: package not found\n", names[i]);
         else if (ids[i] != -1)
@@ -915,12 +918,15 @@ int cmd_install(char **names) {
         return 1;
     }
 
-    remove_full_dir(TEMP_DIR);  // clean temp directory before downloading
-    mkdir(TEMP_DIR, 0755);      // ensure tmp directory exists
+    remove_full_dir(PATH_TEMP);             // clean temp directory before downloading
+    mkdir(PATH_TEMP, 0755);                 // ensure tmp directory exists
+
     #ifdef __profanOS__
-    mkdir("/zada/stp", 0755);          // ensure remove script directory exists
-    mkdir("/zada/stp/remove", 0755);   // ensure remove script directory exists
+    mkdir(PATH_STP, 0755);                  // ensure remove script directory exists
+    mkdir(PATH_STP "/" PKG_RMDIR, 0755);    // ensure remove script directory exists
     #endif
+
+    memset(&g_alltime_dl_stat, 0, sizeof(g_alltime_dl_stat));
 
     id_name_pair_t *dl_deps = NULL;
 
@@ -940,7 +946,7 @@ int cmd_install(char **names) {
         r = cmd_install_install(dl_deps);
     }
 
-    remove_full_dir(TEMP_DIR);
+    remove_full_dir(PATH_TEMP);
     free(dl_deps);
     free(ids);
 
@@ -952,14 +958,14 @@ int cmd_info(char **names) {
     stp_info_t info;
 
     for (int i = 0; names[i]; i++) {
-        int64_t id = get_pkg_id(names[i]);
+        int64_t id = pkg_get_id(names[i]);
         if (id == 0) {
             fprintf(stderr, "stp: %s: package not found\n", names[i]);
             continue;
         } else if (id == -1)
             return 1;
 
-        if (get_pkg_info(id, &info) == -1)
+        if (pkg_get_info(id, &info) == -1)
             return 1;
 
         printf("PACKAGE INFO -----------\n");
@@ -969,7 +975,7 @@ int cmd_info(char **names) {
         printf("  file_size    %"PRId64" KB\n", info.file_size / 1024);
         printf("  version      %u\n", info.version);
 
-        int num_deps = get_pkg_deps(id, deps, STP_MAX_DEPS);
+        int num_deps = pkg_get_deps(id, deps, STP_MAX_DEPS);
 
         if (num_deps == -1)
             return 1;
@@ -979,7 +985,7 @@ int cmd_info(char **names) {
 
         printf("DEPENDENCIES -----------\n");
         for (int j = 0; j < num_deps; j++) {
-            if (get_pkg_info(deps[j], &info) == -1)
+            if (pkg_get_info(deps[j], &info) == -1)
                 return 1;
 
             printf("  %-12s %"PRId64" KB\n", info.name, info.file_size / 1024);
@@ -1089,6 +1095,6 @@ int main(int argc, char **argv) {
             break;
     }
 
-    close(G_FD);
+    close(G_SOCKET_FD);
     return ret;
 }
