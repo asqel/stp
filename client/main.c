@@ -24,6 +24,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <poll.h>
 
 #if defined(__profanOS__)
@@ -647,6 +648,26 @@ typedef struct {
 
 local_pkg_info_t **G_LPL = NULL;
 
+static char *trim_strdup(const char *str) {
+    // trim leading and trailing whitespace and duplicate the string
+
+    while (*str && (isspace((unsigned char) *str)))
+        str++;
+
+    size_t len = strlen(str);
+
+    while (len > 0 && isspace((unsigned char) str[len - 1]))
+        len--;
+
+    char *result = malloc(len + 1);
+    if (!result)
+        return NULL;
+
+    memcpy(result, str, len);
+    result[len] = '\0';
+    return result;
+}
+
 int lpl_load(void) {
     FILE *f = fopen(PATH_STP "/" PKG_LIST, "r");
     G_LPL = malloc(sizeof(local_pkg_info_t *));
@@ -662,13 +683,16 @@ int lpl_load(void) {
     int count = 0;
 
     while (fgets(line, sizeof(line), f)) {
+        if (strlen(line) < 3) // skip empty lines
+            continue;
+
         info = calloc(1, sizeof(local_pkg_info_t));
         line_num++;
     
         token = strtok(line, ",");
         if (!token)
             goto parse_error;
-        info->name = strdup(token);
+        info->name = trim_strdup(token);
 
         token = strtok(NULL, ",");
         if (!token)
@@ -683,7 +707,7 @@ int lpl_load(void) {
         int dep_count = 0;
         while ((token = strtok(NULL, ",")) != NULL) {
             info->deps = realloc(info->deps, (dep_count + 2) * sizeof(char *));
-            info->deps[dep_count] = strdup(token);
+            info->deps[dep_count] = trim_strdup(token);
             dep_count++;
         }
         if (info->deps)
@@ -759,7 +783,7 @@ int lpl_is_installed(const char *name) {
     return 0;
 }
 
-int lpl_add(const char *name, uint64_t version, int is_a_dep, char **deps) {
+int lpl_add(const char *name, uint64_t version, int is_a_dep) {
     if (!G_LPL)
         lpl_load();
 
@@ -767,21 +791,7 @@ int lpl_add(const char *name, uint64_t version, int is_a_dep, char **deps) {
     info->name = strdup(name);
     info->version = version;
     info->is_a_dep = is_a_dep;
-
-    int dep_count = 0;
-    if (deps) {
-        while (deps[dep_count])
-            dep_count++;
-    }
-
-    if (dep_count > 0) {
-        info->deps = malloc((dep_count + 1) * sizeof(char *));
-        for (int i = 0; i < dep_count; i++)
-            info->deps[i] = strdup(deps[i]);
-        info->deps[dep_count] = NULL;
-    } else {
-        info->deps = NULL;
-    }
+    info->deps = NULL;
 
     int count = 0;
     while (G_LPL && G_LPL[count])
@@ -793,6 +803,24 @@ int lpl_add(const char *name, uint64_t version, int is_a_dep, char **deps) {
     G_LPL[count] = NULL;
 
     return 0;
+}
+
+int lpl_add_dep(const char *name, const char *dep_name) {
+    for (int i = 0; G_LPL[i]; i++) {
+        if (strcmp(G_LPL[i]->name, name) != 0)
+            continue;
+        int dep_count = 0;
+        if (G_LPL[i]->deps) {
+            while (G_LPL[i]->deps[dep_count])
+                dep_count++;
+        }
+
+        G_LPL[i]->deps = realloc(G_LPL[i]->deps, (dep_count + 2) * sizeof(char *));
+        G_LPL[i]->deps[dep_count] = strdup(dep_name);
+        G_LPL[i]->deps[dep_count + 1] = NULL;
+        return 0;
+    }
+    return -1;
 }
 
 /*******************************************
@@ -919,14 +947,20 @@ int cmd_list(void) {
     return 0;
 }
 
-static id_name_pair_t *cmd_install_dl(uint64_t id, id_name_pair_t *dl_deps) {
+static id_name_pair_t *cmd_install_dl(uint64_t id, const char *from, id_name_pair_t *dl_deps) {
     stp_info_t info;
 
     if (pkg_get_info(id, &info) == -1)
         return NULL;
 
+    if (from)
+        lpl_add_dep(from, info.name);
+
     if (lpl_is_installed(info.name)) {
-        printf("stp: package '%s' already downloaded\n", info.name);
+        if (from)
+            printf("stp: dependency '%s' of '%s' is already installed, skipping\n", info.name, from);
+        else
+            printf("stp: package '%s' already downloaded\n", info.name);
         return dl_deps;
     }
 
@@ -948,11 +982,11 @@ static id_name_pair_t *cmd_install_dl(uint64_t id, id_name_pair_t *dl_deps) {
     dl_deps[dl_deps_count].id = id;
     dl_deps[++dl_deps_count].id = -1;
 
-    lpl_add(info.name, info.version, 0, NULL);
+    lpl_add(info.name, info.version, from != NULL);
 
     for (int i = 0; i < num_deps; i++) {
         // printf("get package %"PRId64", dependency of %s\n", deps[i], info.name);
-        dl_deps = cmd_install_dl(deps[i], dl_deps);
+        dl_deps = cmd_install_dl(deps[i], info.name, dl_deps);
         if (dl_deps == NULL)
             return NULL;
     }
@@ -1085,17 +1119,18 @@ int cmd_install(char **names) {
 
     memset(&g_alltime_dl_stat, 0, sizeof(g_alltime_dl_stat));
 
-    id_name_pair_t *dl_deps = NULL;
+    id_name_pair_t *dl_deps = malloc(sizeof(id_name_pair_t));
+    dl_deps[0].id = -1;
 
     for (int i = 0; i < count; i++) {
-        dl_deps = cmd_install_dl(ids[i], dl_deps);
+        dl_deps = cmd_install_dl(ids[i], NULL, dl_deps);
         if (dl_deps == NULL) {
             r = 1;
             break;
         }
     }
 
-    if (r == 0) {
+    if (r == 0 && dl_deps[0].id != -1) {
         printf("all downloads complete in %.2f s - %"PRIu32" packets received, %"PRIu32" lost - %.2f MB/s\n",
                     (double) g_alltime_dl_stat.total_ms / 1000.0, g_alltime_dl_stat.packets_recv, g_alltime_dl_stat.packets_lost,
                     (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) / (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
