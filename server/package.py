@@ -6,6 +6,7 @@ import hashlib
 
 packages: dict[str, list[str, str, int, list[int], int]] = {}; # name: [desc, path, id, [dependencies], version]
 id_to_name: dict[int, str] = {}
+id_max = 0
 
 def init_packages() -> None:
 	global packages
@@ -18,11 +19,9 @@ def init_packages() -> None:
 			max_len = pck.MAX_PACKET_SIZE - 6 - 2;
 			max_len = max_len // 8;
 			k[3] = k[3][:max_len];
-	with open("./list.bin", "wb") as f:
-		for i in packages.values():
-			f.write(i[2].to_bytes(8, "little"));
-	packages["_"] = ["packages id list of the server", "./list.bin", 0, [], 0];
-	id_to_name[0] = "_"
+	
+	global id_max
+	id_max = max(id_to_name.keys())
 
 def exit_packages() -> None:
 	with open("./packages.json.new", "w") as f:
@@ -116,6 +115,15 @@ def send_dep(packet: pck.packet_t, id: int) -> None:
 			dep += i.to_bytes(8, "little");
 		packet.append(dep);
 		packet._type = pck.GET_DEP_RSP;
+		return ;
+	except Exception as e:
+		packet._type = pck.ERR_FAIL;
+		return ;
+
+def send_max(packet: pck.packet_t) -> None:
+	try:
+		packet._type = pck.GET_MAX_RSP;
+		packet.append(id_max.to_bytes(8, "little"));
 		return ;
 	except Exception as e:
 		packet._type = pck.ERR_FAIL;

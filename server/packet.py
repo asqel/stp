@@ -37,6 +37,9 @@ GET_ID_RSP = 0x02;
 GET_INFO = 0x03;
 GET_INFO_RSP = 0x04;
 
+GET_MAX = 0x05
+GET_MAX_RSP = 0x06
+
 READ_PART = 0x07;
 READ_PART_RSP = 0x08;
 
@@ -45,7 +48,6 @@ GET_DEP_RSP = 0x0A;
 
 def respond(request: packet_t) -> None:
 	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
-
 	if (request._type == GET_ID):
 		if len(request.data) != 64:
 			res._type = ERR_UNKNOWN_REQUEST;
@@ -81,6 +83,11 @@ def respond(request: packet_t) -> None:
 			res._type = ERR_UNKNOWN_REQUEST;
 		else:
 			package.send_dep(res, int.from_bytes(request.data, "little"));
+	elif (request._type == GET_MAX):
+		if (len(request.data)):
+			res._type = ERR_UNKNOWN_REQUEST;
+		else:
+			package.send_max(res);
 		
 	else:
 		res._type = ERR_UNKNOWN_REQUEST;
