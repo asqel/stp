@@ -27,12 +27,12 @@
 #include <poll.h>
 
 #if defined(__profanOS__)
-    #include <modules/panda.h>
-    #include <profan/md5.h>
-    #include <sys/wait.h>
-    #include <profan.h>
+  #include <modules/panda.h>
+  #include <profan/md5.h>
+  #include <sys/wait.h>
+  #include <profan.h>
 #elif defined(__linux__)
-    #include <sys/ioctl.h> // terminal size for progress bar
+  #include <sys/ioctl.h> // terminal size for progress bar
 #endif
 
 // client setings (editable)
@@ -49,6 +49,11 @@
 #define PATH_UNZIP   "/bin/f/bsdunzip.elf"
 #define PATH_OLIVINE "/bin/f/olivine.elf"
 #define PATH_RM      "/bin/c/rm.elf"
+
+#ifndef __profanOS__
+  #undef PATH_STP
+  #define PATH_STP "./stp_data"
+#endif
 
 // protocol types
 #define GET_ID          0x01
@@ -633,7 +638,162 @@ int pkg_get_list(uint64_t **ids) {
  *                                        *
 ********************************************/
 
+typedef struct {
+    char *name;
+    uint64_t version;
+    int is_a_dep;
+    char **deps;
+} local_pkg_info_t;
 
+local_pkg_info_t **G_LPL = NULL;
+
+int lpl_load(void) {
+    FILE *f = fopen(PATH_STP "/" PKG_LIST, "r");
+    G_LPL = malloc(sizeof(local_pkg_info_t *));
+
+    if (!f) {
+        G_LPL[0] = NULL;
+        return 0;
+    }
+
+    local_pkg_info_t *info;
+    char *token, line[1024];
+    int line_num = 0;
+    int count = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        info = calloc(1, sizeof(local_pkg_info_t));
+        line_num++;
+    
+        token = strtok(line, ",");
+        if (!token)
+            goto parse_error;
+        info->name = strdup(token);
+
+        token = strtok(NULL, ",");
+        if (!token)
+            goto parse_error;
+        info->version = strtoull(token, NULL, 10);
+
+        token = strtok(NULL, ",");
+        if (!token)
+            goto parse_error;
+        info->is_a_dep = atoi(token);
+
+        int dep_count = 0;
+        while ((token = strtok(NULL, ",")) != NULL) {
+            info->deps = realloc(info->deps, (dep_count + 2) * sizeof(char *));
+            info->deps[dep_count] = strdup(token);
+            dep_count++;
+        }
+        if (info->deps)
+            info->deps[dep_count] = NULL;
+
+        G_LPL = realloc(G_LPL, (count + 2) * sizeof(local_pkg_info_t *));
+        G_LPL[count] = info;
+        count++;
+
+        continue;
+        parse_error:
+        free(info->name);
+        free(info);
+        fprintf(stderr, "stp: " PKG_LIST ": parse error on line %d, skipping\n", line_num);
+    }
+
+    G_LPL[count] = NULL;
+
+    fclose(f);
+    return 0;
+}
+
+int lpl_save(void) {
+    if (!G_LPL)
+        return 0; // nothing to save
+
+    FILE *f = fopen(PATH_STP "/" PKG_LIST, "w");
+    if (!f) {
+        fprintf(stderr, "stp: Failed to open " PATH_STP "/" PKG_LIST " for writing\n");
+        return -1;
+    }
+
+    for (int i = 0; G_LPL[i]; i++) {
+        fprintf(f, "%s,%"PRIu64",%d", G_LPL[i]->name, G_LPL[i]->version, G_LPL[i]->is_a_dep);
+        if (G_LPL[i]->deps) {
+            for (int j = 0; G_LPL[i]->deps[j]; j++) {
+                fprintf(f, ",%s", G_LPL[i]->deps[j]);
+            }
+        }
+        fprintf(f, "\n");
+    }
+
+    fclose(f);
+    return 0;
+}
+
+int lpl_free(void) {
+    if (!G_LPL)
+        return 0;
+
+    for (int i = 0; G_LPL[i]; i++) {
+        if (G_LPL[i]->deps) {
+            for (int j = 0; G_LPL[i]->deps[j]; j++)
+                free(G_LPL[i]->deps[j]);
+            free(G_LPL[i]->deps);
+        }
+        free(G_LPL[i]->name);    
+        free(G_LPL[i]);
+    }
+    free(G_LPL);
+    return 0;
+}
+
+int lpl_is_installed(const char *name) {
+    if (!G_LPL)
+        lpl_load();
+
+    for (int i = 0; G_LPL[i]; i++) {
+        if (strcmp(G_LPL[i]->name, name) == 0)
+            return 1;
+    }
+
+    return 0;
+}
+
+int lpl_add(const char *name, uint64_t version, int is_a_dep, char **deps) {
+    if (!G_LPL)
+        lpl_load();
+
+    local_pkg_info_t *info = malloc(sizeof(local_pkg_info_t));
+    info->name = strdup(name);
+    info->version = version;
+    info->is_a_dep = is_a_dep;
+
+    int dep_count = 0;
+    if (deps) {
+        while (deps[dep_count])
+            dep_count++;
+    }
+
+    if (dep_count > 0) {
+        info->deps = malloc((dep_count + 1) * sizeof(char *));
+        for (int i = 0; i < dep_count; i++)
+            info->deps[i] = strdup(deps[i]);
+        info->deps[dep_count] = NULL;
+    } else {
+        info->deps = NULL;
+    }
+
+    int count = 0;
+    while (G_LPL && G_LPL[count])
+        count++;
+
+    G_LPL = realloc(G_LPL, (count + 2) * sizeof(local_pkg_info_t *));
+    G_LPL[count] = info;
+    count++;
+    G_LPL[count] = NULL;
+
+    return 0;
+}
 
 /*******************************************
  *                                        *
@@ -724,6 +884,8 @@ int setup(void) {
         G_TERMINAL_WIDTH = 80;
     #endif
 
+    mkdir(PATH_STP, 0755);  // ensure stp directory exists
+
     return setup_connection();
 }
 
@@ -763,6 +925,11 @@ static id_name_pair_t *cmd_install_dl(uint64_t id, id_name_pair_t *dl_deps) {
     if (pkg_get_info(id, &info) == -1)
         return NULL;
 
+    if (lpl_is_installed(info.name)) {
+        printf("stp: package '%s' already downloaded\n", info.name);
+        return dl_deps;
+    }
+
     int64_t deps[STP_MAX_DEPS];
     int num_deps = pkg_get_deps(id, deps, STP_MAX_DEPS);
 
@@ -781,22 +948,13 @@ static id_name_pair_t *cmd_install_dl(uint64_t id, id_name_pair_t *dl_deps) {
     dl_deps[dl_deps_count].id = id;
     dl_deps[++dl_deps_count].id = -1;
 
-    for (int i = 0; i < num_deps; i++) {
-        for (int j = 0; j < dl_deps_count; j++) {
-            if (deps[i] == dl_deps[j].id) {
-                fprintf(stderr, "dependency %s of %s already downloaded, skipping\n", dl_deps[j].name, info.name);
-                goto next_dep;
-            }
-        }
+    lpl_add(info.name, info.version, 0, NULL);
 
+    for (int i = 0; i < num_deps; i++) {
         // printf("get package %"PRId64", dependency of %s\n", deps[i], info.name);
         dl_deps = cmd_install_dl(deps[i], dl_deps);
         if (dl_deps == NULL)
             return NULL;
-        dl_deps_count = 0;
-        while (dl_deps[dl_deps_count].id != -1)
-            dl_deps_count++;
-        next_dep:;
     }
 
     printf("downloading %s v%d: %s (%"PRId64" KB)\n", info.name, info.version, info.desc, info.file_size / 1024);
@@ -922,7 +1080,6 @@ int cmd_install(char **names) {
     mkdir(PATH_TEMP, 0755);                 // ensure tmp directory exists
 
     #ifdef __profanOS__
-    mkdir(PATH_STP, 0755);                  // ensure remove script directory exists
     mkdir(PATH_STP "/" PKG_RMDIR, 0755);    // ensure remove script directory exists
     #endif
 
@@ -1094,6 +1251,10 @@ int main(int argc, char **argv) {
             ret = 1;
             break;
     }
+
+    if (ret == 0)
+        lpl_save();
+    lpl_free();
 
     close(G_SOCKET_FD);
     return ret;

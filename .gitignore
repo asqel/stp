@@ -67,3 +67,4 @@ output/
 *.json
 *.zip
 server/list.bin
+client/stp_data
