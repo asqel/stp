@@ -22,6 +22,7 @@ def init_packages() -> None:
 		for i in packages.values():
 			f.write(i[2].to_bytes(8, "little"));
 	packages["_"] = ["packages id list of the server", "./list.bin", 0, [], 0];
+	id_to_name[0] = "_"
 
 def exit_packages() -> None:
 	with open("./packages.json.new", "w") as f:
