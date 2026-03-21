@@ -109,6 +109,7 @@ typedef struct {    // used by cmd_install_dl
 
 download_stat_t g_alltime_dl_stat;
 
+const char *G_SERVER_ADDR = NULL;
 int G_TERMINAL_WIDTH = 80;
 int G_DOWNLOAD_MUTE = 0;
 int G_SOCKET_FD;
@@ -916,7 +917,7 @@ static int parse_ipandport(const char *str, struct sockaddr_in *addr) {
 static int setup_connection(void) {
     struct sockaddr_in addr;
 
-    if (parse_ipandport(DEFAULT_IP, &addr))
+    if (parse_ipandport(G_SERVER_ADDR, &addr))
         return 1;
 
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -1365,11 +1366,55 @@ int cmd_upgrade(void) {
     return 0;
 }
 
+int cmd_get(char **names) {
+    for (int i = 0; names[i]; i++) {
+        int64_t id = pkg_get_id(names[i]);
+        if (id == 0)
+            fprintf(stderr, "stp: Package '%s' not found\n", names[i]);
+        else if (id == -1)
+            return 1;
+        else {
+            stp_info_t info;
+            if (pkg_get_info(id, &info) == -1)
+                return 1;
+
+            printf("downloading %s v%d: %s (%"PRId64" KB)\n", info.name, info.version, info.desc, info.file_size / 1024);
+
+            char dl_path[PATH_MAX];
+            snprintf(dl_path, sizeof(dl_path), "%s.zip", info.name);
+
+            if (pkg_download(id, dl_path, &info, NULL) == -1)
+                return 1;
+        }
+    }
+
+    return 0;
+}
+
 int cmd_info(char **names) {
     int64_t deps[STP_MAX_DEPS];
     stp_info_t info;
 
+    if (!G_LPL)
+        lpl_load();
+
     for (int i = 0; names[i]; i++) {
+        local_pkg_info_t *local_info = NULL;
+
+        for (int j = 0; G_LPL[j]; j++) {
+            if (strcmp(G_LPL[j]->name, names[i]) != 0)
+                continue;
+            const char *dependent = lpl_get_dependent(names[i]);
+            local_info = G_LPL[j];
+        
+            printf("LOCAL VERSION ------------\n");
+            printf("  name             %s\n", G_LPL[j]->name);
+            printf("  version          %u\n", G_LPL[j]->version);
+            printf("  installation     %s\n", G_LPL[j]->is_a_dep ? "dependency" : "by user");
+            printf("  first used by    %s\n", dependent ? dependent : "N/A");
+            break;
+        }
+
         int64_t id = pkg_get_id(names[i]);
         if (id == 0) {
             fprintf(stderr, "stp: %s: package not found\n", names[i]);
@@ -1380,43 +1425,71 @@ int cmd_info(char **names) {
         if (pkg_get_info(id, &info) == -1)
             return 1;
 
-        printf("PACKAGE INFO -----------\n");
-        printf("  id           %"PRId64"\n", id);
-        printf("  name         %s\n", info.name);
-        printf("  desc         %s\n", info.desc);
-        printf("  file_size    %"PRId64" KB\n", info.file_size / 1024);
-        printf("  version      %u\n", info.version);
+        printf("REMOTE VERSION -----------\n");
+        printf("  id               %"PRId64"\n", id);
+        printf("  version          %u\n", info.version);
+        printf("  desc             %s\n", info.desc);
+        printf("  zip size         %"PRId64" KB\n", info.file_size / 1024);
 
         int num_deps = pkg_get_deps(id, deps, STP_MAX_DEPS);
 
         if (num_deps == -1)
             return 1;
 
-        if (num_deps == 0)
+        if (num_deps == 0 && (!local_info || local_info->deps == NULL))
             continue;
 
         printf("DEPENDENCIES -----------\n");
-        for (int j = 0; j < num_deps; j++) {
-            if (pkg_get_info(deps[j], &info) == -1)
-                return 1;
+        char **deps_list = malloc(num_deps * sizeof(char *));
 
-            printf("  %-12s %"PRId64" KB\n", info.name, info.file_size / 1024);
+        for (int j = 0; j < num_deps; j++) {
+            if (pkg_get_info(deps[j], &info) == -1) {
+                free(deps_list);
+                return 1;
+            }
+            deps_list[j] = strdup(info.name);
         }
+
+        if (local_info && local_info->deps) {
+            for (int j = 0; local_info->deps[j]; j++) {
+                int found = 0;
+                for (int k = 0; k < num_deps; k++) {
+                    if (!deps_list[k] || strcmp(local_info->deps[j], deps_list[k]) != 0)
+                        continue;
+                    free(deps_list[k]);
+                    deps_list[k] = NULL; // mark as found
+                    found = 1;
+                    break;
+                }
+                printf("  %-16s L%s\n", local_info->deps[j], found ? "+R" : "");
+            }
+        }
+
+        for (int j = 0; j < num_deps; j++) {
+            if (deps_list[j]) {
+                printf("  %-16s R\n", deps_list[j]);
+                free(deps_list[j]);
+            }
+        }
+
+        free(deps_list);
     }
 
     return 0;
 }
 
 int cmd_help(void) {
-    fputs("Usage: stp <command> [args]\n"
+    fputs("Usage: stp [-s server] <command> [args]\n"
             "Commands:\n"
             "  install <pkg1> [pkg2 ...]  Install packages\n"
             "  remove  [pkg1] [pkg2 ...]  Remove packages and unused dependencies\n"
             "  info    <pkg1> [pkg2 ...]  Show package info\n"
+            "  get     <pkg1> [pkg2 ...]  Download packages without installing\n"
             "  list                       List available packages\n"
             "  upgrade                    Upgrade installed packages\n"
             "Options:\n"
-            "  --help                     Show this help message\n",
+            "  -h / --help                Show this help message\n"
+            "  -s <server>                Specify server address\n",
         stdout);
     return 0;
 }
@@ -1432,6 +1505,7 @@ typedef enum {
     CMD_INSTALL,
     CMD_REMOVE,
     CMD_INFO,
+    CMD_GET,
     CMD_LIST,
     CMD_UPGRADE,
     CMD_HELP
@@ -1447,6 +1521,7 @@ cmd_entry_t commands[] = {
     { CMD_INSTALL, 1, { "install", "i", NULL } },
     { CMD_REMOVE,  2, { "remove", "rm", NULL } },
     { CMD_INFO,    1, { "info", NULL } },
+    { CMD_GET,     1, { "get", NULL } },
     { CMD_LIST,    0, { "list", NULL } },
     { CMD_UPGRADE, 0, { "upgrade", "u", NULL } },
     { CMD_HELP,    0, { "--help", "-h", NULL } }
@@ -1456,14 +1531,26 @@ command_t parse_args(int argc, char **argv) {
     if (argc < 2)
         return CMD_HELP;
 
+    if (strcmp(argv[1], "-s") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "stp: Missing server address after -s\n");
+            return CMD_ERROR;
+        }
+        G_SERVER_ADDR = argv[2];
+        argv += 2;
+
+        if (argc < 4)
+            return CMD_HELP;
+    }
+
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
         for (size_t j = 0; commands[i].str[j]; j++) {
             if (strcmp(argv[1], commands[i].str[j]))
                 continue;
-            if (commands[i].needs_arg == 1 && argc < 3) {
+            if (commands[i].needs_arg == 1 && !argv[2]) {
                 fprintf(stderr, "stp: %s: Missing argument\n", argv[1]);
                 return CMD_ERROR;
-            } else if (commands[i].needs_arg == 0 && argc > 2) {
+            } else if (commands[i].needs_arg == 0 && argv[2]) {
                 fprintf(stderr, "stp: %s: Too many arguments\n", argv[1]);
                 return CMD_ERROR;
             }
@@ -1486,6 +1573,11 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    if (G_SERVER_ADDR == NULL)
+        G_SERVER_ADDR = DEFAULT_IP;
+    else
+        argv += 2;
+
     if (setup())
         return 1;
 
@@ -1503,6 +1595,9 @@ int main(int argc, char **argv) {
             break;
         case CMD_INFO:
             ret = cmd_info(argv + 2);
+            break;
+        case CMD_GET:
+            ret = cmd_get(argv + 2);
             break;
         case CMD_UPGRADE:
             ret = cmd_upgrade();
