@@ -19,7 +19,7 @@ def sig_hand(a, b):
 def reset_alarm():
 	signal.signal(signal.SIGALRM, sig_hand)
 	now = datetime.now()
-	target = now.replace(hour=19, minute=2, second=30, microsecond=0)
+	target = now.replace(hour=5, minute=0, second=0, microsecond=0)
 	if now >= target:
 		target += timedelta(days=1)
 	
