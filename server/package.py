@@ -3,10 +3,13 @@ import packet as pck
 import os
 import shutil
 import hashlib
+import subprocess
 
 packages: dict[str, list[str, str, int, list[int], int]] = {}; # name: [desc, path, id, [dependencies], version]
 id_to_name: dict[int, str] = {}
 id_max = 0
+
+update_process = None
 
 def init_packages() -> None:
 	global packages
@@ -21,7 +24,33 @@ def init_packages() -> None:
 			k[3] = k[3][:max_len];
 	
 	global id_max
-	id_max = max(id_to_name.keys())
+	if (id_to_name.keys()):
+		id_max = max(id_to_name.keys())
+
+def reset():
+	global packages
+	global id_to_name
+	global id_max
+	global update_process
+
+	packages = {}
+	id_to_name = {}
+	id_max = 0
+	update_process = subprocess.Popen(["./update.sh"])
+
+def is_reseting():
+	global update_process
+
+	if update_process is None:
+		return False
+	status = update_process.poll()
+	if status is None:
+		return True
+	update_process = None
+	init_packages()
+	return False
+
+
 
 def exit_packages() -> None:
 	with open("./packages.json.new", "w") as f:
