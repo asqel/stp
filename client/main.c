@@ -61,6 +61,8 @@
 #define GET_ID_RSP      0x02
 #define GET_INFO        0x03
 #define GET_INFO_RSP    0x04
+#define GET_MAX         0x05
+#define GET_MAX_RSP     0x06
 #define READ_PART       0x07
 #define READ_PART_RSP   0x08
 #define GET_DEP         0x09
@@ -375,6 +377,21 @@ int pkg_get_deps(int64_t id, int64_t *dep_buf, size_t buf_size) {
     return num_deps;
 }
 
+int64_t pkg_get_max_id(void) {
+    uint8_t buf[STP_PKT_SIZE];
+
+    int rlen = stp_sarap(buf, 8, GET_MAX);
+    if (rlen < 0)
+        return -1;
+
+    if (rlen != 16)
+        RETERR("stp: [protocol err] recv wrong length\n");
+
+    uint64_t max_id;
+    memcpy(&max_id, buf + 8, 8);
+    return max_id;
+}
+
 /*******************************************
  *                                        *
  *   STP CLIENT SIDE DOWNLOAD FUNCTIONS   *
@@ -592,45 +609,6 @@ int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_s
     fclose(f);
     remove(dest_path);
     return -1;
-}
-
-int pkg_get_list(uint64_t **ids) {
-    stp_info_t *info_buf = malloc(sizeof(stp_info_t));
-
-    if (pkg_get_info(0, info_buf) == -1) {
-        free(info_buf);
-        return -1;
-    }
-
-    // download the list
-    if (pkg_download(0, "pkg_list.tmp", info_buf, NULL) == -1) {
-        free(info_buf);
-        return -1;
-    }
-
-    // the list is a sequence of 8-byte ids
-    int num_ids = info_buf->file_size / 8;
-    free(info_buf);
-
-    uint64_t *id_list = malloc(num_ids * 8);
-
-    FILE *f = fopen("pkg_list.tmp", "rb");
-    if (!f) {
-        free(id_list);
-        return -1;
-    }
-
-    if (fread(id_list, 8, num_ids, f) != (size_t) num_ids) {
-        free(id_list);
-        fclose(f);
-        return -1;
-    }
-
-    fclose(f);
-    remove("pkg_list.tmp");
-
-    *ids = id_list;
-    return num_ids;
 }
 
 /*******************************************
@@ -982,26 +960,22 @@ int setup(void) {
 ********************************************/
 
 int cmd_list(void) {
-    uint64_t *ids;
-    int num_ids = pkg_get_list(&ids);
+    int64_t num_ids = pkg_get_max_id();
 
     if (num_ids < 0)
         return 1;
 
     printf("available packages:\n");
 
-    for (int i = 0; i < num_ids; i++) {
+    for (int i = 1; i <= num_ids; i++) {
         stp_info_t info;
 
-        if (pkg_get_info(ids[i], &info) == -1) {
-            free(ids);
+        if (pkg_get_info(i, &info) == -1)
             return 1;
-        }
 
         printf("  %s: %s (%"PRId64" KB)\n", info.name, info.desc, info.file_size / 1024);
     }
 
-    free(ids);
     return 0;
 }
 
