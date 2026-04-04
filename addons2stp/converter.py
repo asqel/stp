@@ -180,9 +180,30 @@ for i, addon in enumerate(ADDONS):
         os.path.join(OUTPUT_DIR, addon['name'] + '.zip'),
         i + 1,
         [get_addon_index(dep) + 1 for dep in addon["dependencies"]] if "dependencies" in addon else [],
-        version
+        version,
+        1 # zip package format
     ]
 
+# add unzip.elf as a single file
+
+print("unzip.elf")
+
+exec(f"wget -q https://github.com/elydre/libatron/releases/download/latest/unzip.elf -O {OUTPUT_DIR}/unzip.elf")
+is_same_version = is_same_file(f"{OUTPUT_DIR}/unzip.elf", "unzip.elf")
+
+if is_same_version and "_unzip" in OLD_VERS and not FORCE_UPDATE:
+    version = OLD_VERS["_unzip"]
+else:
+    version = gen_version()
+
+output_dict["unzip.elf"] = [
+    "Unix unzip command",
+    os.path.join(OUTPUT_DIR, "unzip.elf"),
+    len(ADDONS) + 1,
+    [],
+    version,
+    0 # raw file format
+]
 
 with open(os.path.join(path, "output.json"), "w") as f:
     json.dump(output_dict, f, indent=4)
