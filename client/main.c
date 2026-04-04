@@ -1521,7 +1521,9 @@ int cmd_info(char **names) {
         printf("  id               %"PRId64"\n", id);
         printf("  version          %u\n", info.version);
         printf("  desc             %s\n", info.desc);
-        printf("  zip size         %"PRId64" KB\n", info.file_size / 1024);
+        printf("  size             %"PRId64" KB\n", info.file_size / 1024);
+        printf("  format           %s\n", info.format == FORMAT_PKG ? "package"  :
+                                          info.format == FORMAT_RAW ? "raw file" : "unknown");
 
         int num_deps = pkg_get_deps(id, deps, STP_MAX_DEPS);
 
