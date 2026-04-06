@@ -1433,6 +1433,13 @@ int cmd_upgrade(void) {
         dl_deps[++count].id = -1;
     }
 
+    if (count == 0) {
+        printf("All packages are up to date\n");
+        remove_full_dir(PATH_TEMP);
+        free(dl_deps);
+        return 0;
+    }
+
     print_download_stats();
 
     for (int i = 0; dl_deps[i].id != -1; i++) {
@@ -1443,13 +1450,10 @@ int cmd_upgrade(void) {
         lpl_update_version(dl_deps[i].name, dl_deps[i].id);
     }
 
+    printf("Successfully upgraded %d packages\n", count);
+    
     remove_full_dir(PATH_TEMP);
     free(dl_deps);
-
-    if (count == 0)
-        printf("All packages are up to date\n");
-    else
-        printf("Successfully upgraded %d packages\n", count);
 
     return 0;
 }
