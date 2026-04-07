@@ -145,13 +145,22 @@ for i, addon in enumerate(ADDONS):
         exec(f"tar -xf {targz_path} -C {os.path.join(path, 'tmp', f['name'])}")
         exec(f"rm -f {targz_path}")
 
+        install_file.write(f"IF !(fstat -d '{profan_path}')\n") # the directory already exists
+
         for e in os.listdir(os.path.join(path, "tmp", f['name'])):
-            install_file.write(f"echo -- '+ {profan_path}/{e}'\n")
-            install_file.write(f"mkdir -p '{profan_path}'\n")
-            install_file.write(f"mv -f '{file}/{e}' '{profan_path}/{e}'\n")
+            install_file.write(f"  echo -- '+ {profan_path}/{e}'\n")
+            install_file.write(f"  mkdir -p '{profan_path}'\n")
+            install_file.write(f"  mv -f '{file}/{e}' '{profan_path}/{e}'\n")
 
             remove_file.write(f"echo -- '- {profan_path}/{e}'\n")
             remove_file.write(f"rm -rf '{profan_path}/{e}'\n")
+        
+        install_file.write(f"ELIF !(fstat -e '{profan_path}')\n") # path exists but is not a directory
+        install_file.write(f"  raise '{profan_path} exists but is not a directory'\n")
+        install_file.write(f"ELSE\n")                             # path don't exist, we can move the whole directory
+        install_file.write(f"  echo -- '+ {profan_path} (fast)'\n")
+        install_file.write(f"  mv -f '{file}' '{profan_path}'\n")
+        install_file.write(f"END\n\n")
 
         install_file.write("\n")
         remove_file.write("\n")
