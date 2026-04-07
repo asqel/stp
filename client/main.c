@@ -37,10 +37,11 @@
 #endif
 
 // client setings (editable)
-#define DEFAULT_IP "asqel.ddns.net:42024"
-#define RECV_TIMEOUT_MS 1000  // stop waiting for a server response after this delay
-#define MAX_RETRY_COUNT 4     // give up after this many retries (after a timeout)
-#define FAST_DL_ONCE    16    // ask for 16 parts at once in pkg_download
+#define DEFAULT_SERV    "asqel.ddns.net:42024"
+#define DEFAULT_PORT    42024    // used if no port specified in -s option
+#define RECV_TIMEOUT_MS 1000     // stop waiting for a server response after this delay
+#define MAX_RETRY_COUNT 4        // give up after this many retries (after a timeout)
+#define FAST_DL_ONCE    16       // ask for 16 parts at once in pkg_download
 
 #define PATH_TEMP "/tmp/stp"     // temporary directory for downloads and extraction
 #define PATH_STP  "/zada/stp"    // path used as prefix for PKG_LIST and remove scripts
@@ -1532,18 +1533,26 @@ int cmd_help(void) {
 ********************************************/
 
 static int parse_ipandport(const char *str, struct sockaddr_in *addr) {
-    // truc.ddns.net:1234 or 127.0.0.1:1234
+    // truc.ddns.net:1234 or 127.0.0.1:1234 or truc.ddns.net (uses DEFAULT_PORT)
 
     char ip[256];
-    int port;
+    int port = DEFAULT_PORT; // default port
 
     const char *p = strchr(str, ':');
+    size_t ip_len;
+    
     if (!p) {
-        fprintf(stderr, "stp: Invalid server address format (expected ip:port)\n");
-        return -1;
+        // no port specified, use default
+        ip_len = strlen(str);
+    } else {
+        ip_len = p - str;
+        port = atoi(p + 1);
+        if (port <= 0 || port > 65535) {
+            fprintf(stderr, "stp: %s: Invalid port\n", p + 1);
+            return -1;
+        }
     }
 
-    size_t ip_len = p - str;
     if (ip_len >= sizeof(ip)) {
         fprintf(stderr, "stp: IP address too long\n");
         return -1;
@@ -1551,12 +1560,6 @@ static int parse_ipandport(const char *str, struct sockaddr_in *addr) {
 
     memcpy(ip, str, ip_len);
     ip[ip_len] = '\0';
-
-    port = atoi(p + 1);
-    if (port <= 0 || port > 65535) {
-        fprintf(stderr, "stp: %s: Invalid port\n", p + 1);
-        return -1;
-    }
 
     struct hostent *info = gethostbyname(ip);
     if (!info) {
@@ -1699,7 +1702,7 @@ int main(int argc, char **argv) {
     }
 
     if (G_SERVER_ADDR == NULL)
-        G_SERVER_ADDR = DEFAULT_IP;
+        G_SERVER_ADDR = DEFAULT_SERV;
     else
         argv += 2;
 
