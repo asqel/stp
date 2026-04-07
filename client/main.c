@@ -875,100 +875,6 @@ int lpl_update_depflag(const char *name, int is_a_dep) {
 
 /*******************************************
  *                                        *
- *      UDP INITIALIZATION FUNCTIONS      *
- *                                        *
-********************************************/
-
-static int parse_ipandport(const char *str, struct sockaddr_in *addr) {
-    // truc.ddns.net:1234 or 127.0.0.1:1234
-
-    char ip[256];
-    int port;
-
-    const char *p = strchr(str, ':');
-    if (!p) {
-        fprintf(stderr, "stp: Invalid server address format (expected ip:port)\n");
-        return -1;
-    }
-
-    size_t ip_len = p - str;
-    if (ip_len >= sizeof(ip)) {
-        fprintf(stderr, "stp: IP address too long\n");
-        return -1;
-    }
-
-    memcpy(ip, str, ip_len);
-    ip[ip_len] = '\0';
-
-    port = atoi(p + 1);
-    if (port <= 0 || port > 65535) {
-        fprintf(stderr, "stp: %s: Invalid port\n", p + 1);
-        return -1;
-    }
-
-    struct hostent *info = gethostbyname(ip);
-    if (!info) {
-        fprintf(stderr, "stp: %s: Failed to resolve hostname\n", ip);
-        return -1;
-    }
-
-    addr->sin_family = AF_INET;
-    memcpy(&addr->sin_addr, info->h_addr_list[0], 4);
-    addr->sin_port = htons(port);
-
-    /* printf("// ip: %d.%d.%d.%d:%d\n",
-        (uint8_t)info->h_addr_list[0][0],
-        (uint8_t)info->h_addr_list[0][1],
-        (uint8_t)info->h_addr_list[0][2],
-        (uint8_t)info->h_addr_list[0][3],
-        port
-    ); */
-
-    return 0;
-}
-
-static int setup_connection(void) {
-    struct sockaddr_in addr;
-
-    if (parse_ipandport(G_SERVER_ADDR, &addr))
-        return 1;
-
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-
-    if (fd < 0)
-        return 1;
-
-    G_SOCKET_FD = fd;
-
-    if (connect(fd, (void *)&addr, sizeof(addr))) {
-        fprintf(stderr, "stp: Failed to connect to server: %m\n");
-        close(fd);
-        return 1;
-    }
-
-    return 0;
-}
-
-int setup(void) {
-    #if defined(__profanOS__)
-        panda_get_size((uint32_t *)&G_TERMINAL_WIDTH, NULL);
-        if (G_TERMINAL_WIDTH == 0)
-            G_TERMINAL_WIDTH = 80;
-    #elif defined(__linux__)
-        struct winsize w;
-        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-        G_TERMINAL_WIDTH = w.ws_col;
-    #else
-        G_TERMINAL_WIDTH = 80;
-    #endif
-
-    mkdir(PATH_STP, 0755);  // ensure stp directory exists
-
-    return setup_connection();
-}
-
-/*******************************************
- *                                        *
  *       SUBCOMMANDS IMPLEMENTATION       *
  *                                        *
 ********************************************/
@@ -1617,6 +1523,100 @@ int cmd_help(void) {
             "  -s <server>                Specify server address\n",
         stdout);
     return 0;
+}
+
+/*******************************************
+ *                                        *
+ *      UDP INITIALIZATION FUNCTIONS      *
+ *                                        *
+********************************************/
+
+static int parse_ipandport(const char *str, struct sockaddr_in *addr) {
+    // truc.ddns.net:1234 or 127.0.0.1:1234
+
+    char ip[256];
+    int port;
+
+    const char *p = strchr(str, ':');
+    if (!p) {
+        fprintf(stderr, "stp: Invalid server address format (expected ip:port)\n");
+        return -1;
+    }
+
+    size_t ip_len = p - str;
+    if (ip_len >= sizeof(ip)) {
+        fprintf(stderr, "stp: IP address too long\n");
+        return -1;
+    }
+
+    memcpy(ip, str, ip_len);
+    ip[ip_len] = '\0';
+
+    port = atoi(p + 1);
+    if (port <= 0 || port > 65535) {
+        fprintf(stderr, "stp: %s: Invalid port\n", p + 1);
+        return -1;
+    }
+
+    struct hostent *info = gethostbyname(ip);
+    if (!info) {
+        fprintf(stderr, "stp: %s: Failed to resolve hostname\n", ip);
+        return -1;
+    }
+
+    addr->sin_family = AF_INET;
+    memcpy(&addr->sin_addr, info->h_addr_list[0], 4);
+    addr->sin_port = htons(port);
+
+    /* printf("// ip: %d.%d.%d.%d:%d\n",
+        (uint8_t)info->h_addr_list[0][0],
+        (uint8_t)info->h_addr_list[0][1],
+        (uint8_t)info->h_addr_list[0][2],
+        (uint8_t)info->h_addr_list[0][3],
+        port
+    ); */
+
+    return 0;
+}
+
+static int setup_connection(void) {
+    struct sockaddr_in addr;
+
+    if (parse_ipandport(G_SERVER_ADDR, &addr))
+        return 1;
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (fd < 0)
+        return 1;
+
+    G_SOCKET_FD = fd;
+
+    if (connect(fd, (void *)&addr, sizeof(addr))) {
+        fprintf(stderr, "stp: Failed to connect to server: %m\n");
+        close(fd);
+        return 1;
+    }
+
+    return 0;
+}
+
+int setup(void) {
+    #if defined(__profanOS__)
+        panda_get_size((uint32_t *)&G_TERMINAL_WIDTH, NULL);
+        if (G_TERMINAL_WIDTH == 0)
+            G_TERMINAL_WIDTH = 80;
+    #elif defined(__linux__)
+        struct winsize w;
+        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+        G_TERMINAL_WIDTH = w.ws_col;
+    #else
+        G_TERMINAL_WIDTH = 80;
+    #endif
+
+    mkdir(PATH_STP, 0755);  // ensure stp directory exists
+
+    return setup_connection();
 }
 
 /*******************************************
