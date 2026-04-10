@@ -46,7 +46,7 @@ READ_PART_RSP = 0x08;
 GET_DEP = 0x09;
 GET_DEP_RSP = 0x0A;
 
-def respond(request: packet_t) -> None:
+def respond(root_dir: str, request: packet_t) -> None:
 	res: packet_t = packet_t(request.ip, request.port, request._id, 0);
 	if (request._type == GET_ID):
 		if len(request.data) != 64:
@@ -57,7 +57,7 @@ def respond(request: packet_t) -> None:
 			if zero_idx != -1:
 				name = request.data[:zero_idx];
 				
-			package_id = mama.find_id(name);
+			package_id = mama.find_id(root_dir, name);
 			res._type = GET_ID_RSP;
 			res.append(package_id.to_bytes(8, "little"));
 
@@ -65,14 +65,14 @@ def respond(request: packet_t) -> None:
 		if (len(request.data) != 8):
 			res._type = ERR_UNKNOWN_REQUEST;
 		else:
-			mama.send_info(res, int.from_bytes(request.data, "little"));
+			mama.send_info(root_dir, res, int.from_bytes(request.data, "little"));
 
 	elif (request._type == READ_PART):
 		if (len(request.data) != (8 + 8 + 2)):
 			res._type = ERR_UNKNOWN_REQUEST;
 		else:
 			mama.send_part(
-				res,
+				root_dir, res,
 				int.from_bytes(request.data[:8], "little"),
 				int.from_bytes(request.data[8:16], "little"),
 				int.from_bytes(request.data[16:], "little")

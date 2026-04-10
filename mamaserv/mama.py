@@ -5,13 +5,13 @@ import hashlib
 id_to_path: dict[int, str] = {}
 new_id = 1
 
-def find_id(name: bytes) -> int:
-    name_str = name.decode("utf-8")
+def find_id(root_dir: str, name: bytes) -> int:
+    name_str = os.path.join(name.decode("utf-8"))
     for iid, path in id_to_path.items():
         if path == name_str:
             return iid
 
-    if not os.path.isfile(name_str):
+    if not os.path.isfile(os.path.join(root_dir, name_str)):
         return 0
 
     global new_id
@@ -19,7 +19,7 @@ def find_id(name: bytes) -> int:
     new_id += 1
     return new_id - 1
 
-def send_info(packet, id: int) -> None:
+def send_info(root_dir: str, packet, id: int) -> None:
     try:
         p_name = id_to_path.get(id, "")
         if not p_name:
@@ -31,12 +31,12 @@ def send_info(packet, id: int) -> None:
             name = name[:64]
         name += b'\x00' * (64 - len(name))
 
-        size = os.path.getsize(p_name).to_bytes(8, "little")
+        size = os.path.getsize(os.path.join(root_dir, p_name)).to_bytes(8, "little")
         version = int(0).to_bytes(4, "little")
         iszip = int(0).to_bytes(4, "little")
 
         md5sum = b''
-        with open(p_name, "rb") as f:
+        with open(os.path.join(root_dir, p_name), "rb") as f:
             md5 = hashlib.md5()
             while True:
                 chunk = f.read(8192)
@@ -63,7 +63,7 @@ def send_info(packet, id: int) -> None:
         packet._type = pck.ERR_FAIL
         return
 
-def send_part(packet, id: int, offset: int, _len: int) -> None:
+def send_part(root_path: str, packet, id: int, offset: int, _len: int) -> None:
     try:
         p_name = id_to_path.get(id, "")
         if not p_name:
@@ -72,12 +72,12 @@ def send_part(packet, id: int, offset: int, _len: int) -> None:
         if _len + 2 + 6 > pck.MAX_PACKET_SIZE:
             packet._type = pck.ERR_TOO_LONG
             return
-        size = os.path.getsize(p_name)
+        size = os.path.getsize(os.path.join(root_path, p_name))
         if offset >= size:
             packet._type = pck.ERR_OUT_RANGE
             return
         part = b''
-        with open(p_name, "rb") as f:
+        with open(os.path.join(root_path, p_name), "rb") as f:
             f.seek(offset, 0)
             part = f.read(_len)
         packet._type = pck.READ_PART_RSP

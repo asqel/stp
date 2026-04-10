@@ -262,13 +262,12 @@ static int mytimeout_recv(uint8_t *buf, size_t buf_size, int timeout_ms) {
     if (poll_ret == -1)
         return -1;
     else if (poll_ret == 0)
-        return 0;
+        return -2;
 
     return recv(G_SOCKET_FD, buf, buf_size, 0);
 }
 
 #define RETERR(...) return (fprintf(stderr, __VA_ARGS__), -1)
-#define GOTOERR(section, ...) do {fprintf(stderr, __VA_ARGS__); goto section;} while(0)
 
 static int stp_sarap(uint8_t *buf, int buf_len, uint16_t type) {
     // sarap: send and receive and process
@@ -497,6 +496,13 @@ static void download_print_progress(int64_t received, stp_info_t *info) {
     fflush(stdout);
 }
 
+#define GOTOERR(section, ...) do {  \
+    if (!G_DOWNLOAD_MUTE)           \
+        printf("\n");               \
+    fprintf(stderr, __VA_ARGS__);   \
+    goto section;                   \
+} while (0)
+
 int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_stat_t *dl_stat) {
     uint8_t buf[STP_PKT_SIZE];
     uint64_t block, received_bytes = 0;
@@ -514,10 +520,14 @@ int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_s
     }
 
     uint64_t required_blocks = (info->file_size + STP_MAX_PART_SIZE - 1) / STP_MAX_PART_SIZE;
+    uint8_t *received_parts = calloc(required_blocks, sizeof(uint8_t));
 
-    char *received_parts = calloc(required_blocks, sizeof(char));
+    uint32_t total_send = 0;
+    uint32_t total_recv = 0;
 
     uint32_t start_time = 0;
+    int timeout_count = 0;
+    int send_gets = -1;
 
     if (dl_stat) {
         memset(dl_stat, 0, sizeof(download_stat_t));
@@ -532,26 +542,32 @@ int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_s
     while (received_bytes < info->file_size) {
         block = 0;
 
+        if (send_gets == 0) { 
+            if (timeout_count == -1) // should never happen, internal client error
+                GOTOERR(error, "stp: No more parts to request but file not fully received\n");
+            timeout_count = -1;
+        }
+
         while (block < required_blocks) {
             // send requests for the parts
-            int i = 0;
-            for (; i < FAST_DL_ONCE && block < required_blocks; block++) {
+            send_gets = 0;
+            for (; send_gets < FAST_DL_ONCE && block < required_blocks; block++) {
                 if (received_parts[block])
                     continue; // already received
                 if (download_send(xid | block, id, block * STP_MAX_PART_SIZE, info->file_size))
                     goto error;
-                i++;
+                total_send++;
+                send_gets++;
             }
+
+            if (send_gets == 0)
+                break;
 
             int rlen;
 
-            while ((rlen = (i != FAST_DL_ONCE ? // last blocks ?
-                    (mytimeout_recv(buf, sizeof(buf), 200)) :
-                    (mytimeout_recv(buf, sizeof(buf), 1))))
-                    > 0 && received_bytes < info->file_size
+            while (received_bytes < info->file_size && total_send > total_recv &&
+                (rlen = mytimeout_recv(buf, sizeof(buf), send_gets != FAST_DL_ONCE ? 200 : 2)) >= 0
             ) {
-                // printf("Received a response of length %d\n", rlen);
-
                 if (rlen < 8)
                     GOTOERR(error, "stp: [protocol err] recv too short\n");
 
@@ -593,14 +609,21 @@ int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_s
                 if (!G_DOWNLOAD_MUTE)
                     download_print_progress(received_bytes, info);
 
-                if (dl_stat)
-                    dl_stat->packets_recv++;
+                total_recv++;
 
                 received_parts[block_index] = 1;
+                timeout_count = 0;
             }
 
             if (rlen == -1)
                 GOTOERR(error, "stp: recv error: %m\n");
+
+            if (rlen == -2) {
+                timeout_count += send_gets != FAST_DL_ONCE ? 200 : 2;
+                if (timeout_count >= ((MAX_RETRY_COUNT + 1) * RECV_TIMEOUT_MS))
+                    GOTOERR(error, "stp: recv timeout, max retry count reached\n");
+                continue;
+            }
         }
     }
 
@@ -609,23 +632,31 @@ int pkg_download(int64_t id, const char *dest_path, stp_info_t *info, download_s
 
     fflush(f); // write before checking sum
 
-    if (download_check_md5(dest_path, info->md5))
-        GOTOERR(error, "stp: md5 check failed for downloaded file\n");
-
     if (dl_stat) {
         struct timeval tv;
         gettimeofday(&tv, NULL);
         dl_stat->total_ms = (tv.tv_sec * 1000 + tv.tv_usec / 1000) - start_time;
+        dl_stat->packets_lost = total_send - total_recv;
+        dl_stat->packets_recv = total_recv;
     }
 
+    if (download_check_md5(dest_path, info->md5)) {
+        fprintf(stderr, "stp: md5 check failed for downloaded file\n");
+        goto error;
+    }
+
+    free(received_parts);
     fclose(f);
     return 0;
 
     error:
+    free(received_parts);
     fclose(f);
     remove(dest_path);
     return -1;
 }
+
+#undef GOTOERR
 
 /*******************************************
  *                                        *
@@ -909,7 +940,8 @@ static void print_download_header(stp_info_t *info) {
 static void print_download_stats(void) {
     printf("all downloads complete in %.2f s - %"PRIu32" packets received, %"PRIu32" lost - %.2f MB/s\n",
         (double) g_alltime_dl_stat.total_ms / 1000.0, g_alltime_dl_stat.packets_recv,
-        g_alltime_dl_stat.packets_lost, (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) /
+        g_alltime_dl_stat.packets_lost, g_alltime_dl_stat.packets_recv == 0 ? 0 :
+        (double) (g_alltime_dl_stat.packets_recv * STP_PKT_SIZE) /
         (1024 * 1024) / (g_alltime_dl_stat.total_ms / 1000.0));
 }
 
@@ -1417,7 +1449,8 @@ int cmd_get(char **names) {
         }
     }
 
-    print_download_stats();
+    if (g_alltime_dl_stat.packets_recv > 0)
+        print_download_stats();
 
     return 0;
 }
